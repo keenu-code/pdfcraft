@@ -6949,6 +6949,18 @@ evidence = ["crates/create/src/tests.rs::text_is_wrapped_and_paginated", "crates
 notes = "Helvetica 11 pt on US Letter; form feeds start pages"
 
 [[feature]]
+id = "create.from-email"
+title = "Create PDF from an email message (.eml)"
+area = "J"
+tier = "P1"
+milestone = "M10"
+status = "shipped"
+commands = ["create.file"]
+tools = ["doc_create"]
+evidence = ["crates/create/src/tests.rs::email_headers_body_pictures_and_attachments_become_a_pdf", "crates/create/src/tests.rs::email_attachments_and_information_are_embedded", "crates/create/src/tests.rs::truncated_and_corrupted_emails_never_panic", "crates/engine/src/tests.rs::email_messages_convert_to_a_pdf_of_their_headers_and_body", "crates/automation/tests/it/automation.rs::creating_from_an_email_message_through_tools", "crates/ui-egui/tests/it/create.rs::opening_images_and_text_converts_them_to_new_pdfs"]
+notes = "RFC 5322 with MIME, by any open route (Finder, File ▸ Open, drag, Combine, doc_create, batch convert; macOS declares the .eml type under Open With). The header block (From, Sent, To, Cc, Subject, Attachments) in bold labels, then the HTML body as paragraphs with bold, italic, links (the address shown after the text when the text doesn't say it), lists, quoted replies indented, and the pictures it embeds by Content-ID, at the size the HTML asks for (CSS pixels, as a mail program shows them) and no wider than the column; the plain text when there is no HTML. Every attachment is embedded in the PDF as a document-level file attachment (Attachments panel), the drawn pictures excepted. Helvetica 10 pt with three-quarter-inch margins, on the system region's paper in the app (A4 outside the Letter regions, like Create ▸ Blank) and US Letter headless unless doc_create is given width and height; characters it can't draw are written as [U+XXXX] with a note. Attachments past the thousandth are left out and the Attachments row says how many. Bodies in any charset mail-parser knows (Shift_JIS, GBK, ISO-2022-JP and the rest) are decoded, then written as code points where Helvetica lacks the glyphs. Not yet: Outlook .msg, CSS layout and table grids (tables read in cell order), pictures on the web (never fetched; their text is shown), fonts beyond Helvetica, a paper-size choice, Windows and Linux file associations"
+
+[[feature]]
 id = "create.from-markdown"
 title = "Create PDF from Markdown"
 area = "J"
@@ -7002,11 +7014,11 @@ title = "Create PDF from an HTML file"
 area = "J"
 tier = "P2"
 milestone = "M10"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "shipped"
+commands = ["create.file"]
+tools = ["doc_create"]
+evidence = ["crates/create/src/tests.rs::html_files_become_a_pdf_with_their_title_text_and_pictures", "crates/create/src/tests.rs::truncated_and_corrupted_html_never_panics", "crates/engine/src/tests.rs::html_files_convert_to_a_pdf_of_their_text", "crates/automation/tests/it/automation.rs::creating_from_an_html_file_through_tools", "crates/ui-egui/tests/it/create.rs::opening_images_and_text_converts_them_to_new_pdfs"]
+notes = "An .html or .htm file, by any open route (File ▸ Open, drag, Combine, doc_create, batch convert; #3199, #5353, #6064), on the email importer's pipeline: the text as paragraphs with bold, italic, links (the address shown after the text when the text doesn't say it), lists, quotes and the pictures the file carries inline as data: URIs at the size it asks for; the <title> as the document title; 11 pt Helvetica with one-inch margins on the session's paper. Nothing is fetched or read from disk: a picture on the web or in another file is its alternative text. The encoding is the byte order mark, else the <meta charset> (or the content=\"...; charset=...\" form) in the first kilobyte as a browser's prescan reads it, else the Windows code page the text importer picks. Structure comes from the importer's own marks, so a paragraph that starts with `# `, `* ` or `> ` stays text. Not yet: CSS layout and table grids (cells read in order), fonts beyond Helvetica, headings set larger, a web-page URL (create.from-web-page), the .html type under Open With on macOS (not declared on purpose)"
 
 [[feature]]
 id = "create.from-web-page"

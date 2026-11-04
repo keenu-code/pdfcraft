@@ -2599,3 +2599,848 @@ fn proportions_up_to_the_limit_scale_as_they_did() {
     let mask = noise(20, 10);
     assert_eq!(crate::extract::scaled(&mask, 20, 10), mask);
 }
+
+// ── email messages ──────────────────────────────────────────────────────────────────────────
+
+/// Standard base64 (RFC 4648), for the test message's binary parts.
+fn b64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// A PDF as an attachment, and a forwarded message.
+const LOGS_PDF: &[u8] = b"%PDF-1.4\n%not really a document\n";
+const FORWARDED: &[u8] = b"From: tom@example.com.au\r\nSubject: Earlier\r\n\r\nThe earlier message.\r\n";
+
+/// An Outlook-style message: text and HTML alternatives, a picture embedded by Content-ID, a
+/// picture on the web, a PDF and a forwarded message attached, an encoded subject with an en
+/// dash and accents, an emoji and Chinese text.
+fn sample_eml() -> Vec<u8> {
+    let png = b64(&png_bytes(false));
+    let pdf = b64(LOGS_PDF);
+    let fwd = b64(FORWARDED);
+    format!(
+        "From: \"Ada Lovelace\" <ada@example.com.au>\r\n\
+         To: Grace Hopper <grace@example.com.au>, bob@example.com.au\r\n\
+         Cc: \"Tom\" <tom@example.com.au>\r\n\
+         Subject: RE: Quarterly =?UTF-8?Q?figures_=E2=80=93_r=C3=A9sum=C3=A9?=\r\n\
+         Date: Tue, 3 Nov 2026 09:14:22 +1000\r\n\
+         Message-ID: <abc123@example.com.au>\r\n\
+         MIME-Version: 1.0\r\n\
+         Content-Type: multipart/mixed; boundary=\"MIX\"\r\n\r\n\
+         --MIX\r\nContent-Type: multipart/related; boundary=\"REL\"\r\n\r\n\
+         --REL\r\nContent-Type: multipart/alternative; boundary=\"ALT\"\r\n\r\n\
+         --ALT\r\nContent-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n\
+         Hi Grace,\r\n\r\nPlease see the attached logs =E2=80=93 the boiler ran hot.\r\n\r\n\
+         --ALT\r\nContent-Type: text/html; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n\
+         <html><body><p>Hi Grace,</p><p>&nbsp;</p>\
+         <p>Please see the <b>attached logs</b> =E2=80=93 the boiler ran <i>hot</i> on 14 Oct =F0=9F=98=80.</p>\
+         <p>See <a href=3D\"https://example.com/logs\">the portal</a> or <a href=3D\"https://example.com/\">https://example.com/</a>.</p>\
+         <ul><li>Item one<ul><li>Nested item</li></ul></li><li>=E7=AC=AC=E4=BA=8C</li></ul>\
+         <table><tr><td><img src=3D\"cid:logo@x\" alt=3D\"Company logo\" width=3D\"80\" height=3D\"40\"></td><td><p><b>Ada Lovelace</b><br>Partner</p></td></tr></table>\
+         <p><img src=3D\"https://example.com/chart.png\" alt=3D\"Chart\"></p>\
+         <div><img src=3D\"cid:sig@x\"></div>\
+         <blockquote><p>Earlier message text here.</p></blockquote>\
+         </body></html>\r\n\r\n\
+         --ALT--\r\n\r\n\
+         --REL\r\nContent-Type: image/png; name=\"logo.png\"\r\nContent-ID: <logo@x>\r\nContent-Transfer-Encoding: base64\r\n\
+         Content-Disposition: inline; filename=\"logo.png\"\r\n\r\n{png}\r\n\r\n\
+         --REL\r\nContent-Type: image/png; name=\"sig.png\"\r\nContent-ID: <sig@x>\r\nContent-Transfer-Encoding: base64\r\n\
+         Content-Disposition: inline; filename=\"sig.png\"\r\n\r\n{png}\r\n\r\n\
+         --REL--\r\n\r\n\
+         --MIX\r\nContent-Type: application/pdf; name=\"logs.pdf\"\r\nContent-Disposition: attachment; filename=\"logs.pdf\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{pdf}\r\n\r\n\
+         --MIX\r\nContent-Type: message/rfc822; name=\"forwarded.eml\"\r\nContent-Disposition: attachment; filename=\"forwarded.eml\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{fwd}\r\n\r\n\
+         --MIX--\r\n"
+    )
+    .into_bytes()
+}
+
+fn content_bytes(doc: &Document, page: &Dict) -> Vec<u8> {
+    let c = doc.resolve(page.get(b"Contents").unwrap());
+    let Object::Stream(s) = &*c else { panic!("no content stream") };
+    s.decoded().unwrap()
+}
+
+/// Whether the content stream shows `text` (as its WinAnsi bytes, escaped as in a literal).
+fn shows(content: &[u8], text: &str) -> bool {
+    let literal = literal(&win_ansi(text));
+    let needle = &literal[1..literal.len() - 1];
+    content.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The document-level attachments: name-tree key, embedded stream dictionary and bytes.
+fn embedded_files(doc: &Document) -> Vec<(String, Dict, Vec<u8>)> {
+    let root = doc.get(doc.root().unwrap());
+    let names = root.as_dict().unwrap().get(b"Names").unwrap().as_dict().unwrap().clone();
+    let tree = doc.resolve(names.get(b"EmbeddedFiles").unwrap());
+    let entries = tree.as_dict().unwrap().get(b"Names").unwrap().as_array().unwrap().clone();
+    entries
+        .chunks(2)
+        .map(|pair| {
+            let Object::String(key) = &pair[0] else { panic!("key") };
+            let spec = doc.resolve(&pair[1]);
+            let ef = spec.as_dict().unwrap().get(b"EF").unwrap().as_dict().unwrap().clone();
+            let stream = doc.resolve(ef.get(b"F").unwrap());
+            let Object::Stream(s) = &*stream else { panic!("stream") };
+            (key.to_text(), s.dict.clone(), s.decoded().unwrap())
+        })
+        .collect()
+}
+
+#[test]
+fn source_kind_recognises_email_messages() {
+    assert_eq!(source_kind("Message.EML", b"From: a@b.c\r\n\r\nhi"), Some(SourceKind::Email));
+    assert_eq!(source_kind("x.eml", b"%PDF-1.4"), Some(SourceKind::Pdf), "a PDF named .eml is a PDF");
+    assert_eq!(source_kind("message", b"From: a@b.c\r\n\r\nhi"), None, "by name, like text");
+    assert_eq!(source_kind("Page.HTML", b"<p>x</p>"), Some(SourceKind::Html));
+    assert_eq!(source_kind("page.htm", b"<p>x</p>"), Some(SourceKind::Html));
+    assert!(CONVERTIBLE.contains(&"eml") && CONVERTIBLE.contains(&"html") && CONVERTIBLE.contains(&"htm"));
+}
+
+#[test]
+fn email_headers_body_pictures_and_attachments_become_a_pdf() {
+    let doc = reopen(&from_email("mail.eml", &sample_eml(), LETTER, 11.0).unwrap());
+    let p = pages(&doc);
+    assert_eq!(p.len(), 1, "{} pages", p.len());
+    let c = content_bytes(&doc, &p[0]);
+    // The header block: bold labels, decoded values, the attachments listed with their sizes.
+    assert!(c.windows(26).any(|w| w == b"/F2 11.00 Tf (From: ) Tj\n/"), "{}", String::from_utf8_lossy(&c));
+    assert!(shows(&c, "Ada Lovelace <ada@example.com.au>"));
+    assert!(shows(&c, "Sent: ") && shows(&c, "Tue, 3 Nov 2026 09:14:22 +1000"));
+    assert!(shows(&c, "To: ") && shows(&c, "Grace Hopper <grace@example.com.au>, bob@example.com.au"));
+    assert!(shows(&c, "Cc: ") && shows(&c, "Tom <tom@example.com.au>"));
+    assert!(shows(&c, "Subject: ") && shows(&c, "RE: Quarterly figures – résumé"));
+    let sizes = format!("logs.pdf ({} B), forwarded.eml ({} B)", LOGS_PDF.len(), FORWARDED.len());
+    assert!(shows(&c, "Attachments: ") && shows(&c, &sizes), "{}", String::from_utf8_lossy(&c));
+    assert!(c.windows(10).any(|w| w == b"0.6 G 54.0"), "a rule under the headers");
+    // The HTML body: bold, italic, a link's address after its text (not when the text is the
+    // address), a bullet, a quoted reply indented, the pictures, and escapes for what
+    // Helvetica can't draw, with the note.
+    assert!(c.windows(31).any(|w| w == b"/F2 11.00 Tf (attached logs) Tj"));
+    assert!(c.windows(21).any(|w| w == b"/F3 11.00 Tf (hot) Tj"));
+    assert!(shows(&c, "See the portal <https://example.com/logs> or https://example.com/."), "{}", String::from_utf8_lossy(&c));
+    assert!(shows(&c, "• Item one") && shows(&c, "• Nested item"), "{}", String::from_utf8_lossy(&c));
+    assert!(c.windows(17).any(|w| w == b"BT 1 0 0 1 70.50 "), "a nested item is indented");
+    assert!(shows(&c, "[U+1F600]") && shows(&c, "• [U+7B2C][U+4E8C]"));
+    assert!(shows(&c, ESCAPED_NOTE));
+    assert!(c.windows(17).any(|w| w == b"BT 1 0 0 1 70.50 "), "a quote is indented");
+    assert!(shows(&c, "Earlier message text here."));
+    assert!(
+        c.windows(8).any(|w| w == b"/Im1 Do ") && c.windows(8).any(|w| w == b"/Im2 Do "),
+        "both embedded pictures are drawn, the one without alt text too"
+    );
+    assert!(shows(&c, "q 60.00 0 0 30.00 "), "80 x 40 CSS pixels, as the HTML asks: {}", String::from_utf8_lossy(&c));
+    assert!(shows(&c, "q 3.00 0 0 1.50 "), "a 4 x 2 pixel picture without a size, at CSS pixels: {}", String::from_utf8_lossy(&c));
+    assert!(c.windows(32).any(|w| w == b"/F3 11.00 Tf ([image: Chart]) Tj"), "a web picture is its text");
+    let xobjects = p[0].get(b"Resources").unwrap().as_dict().unwrap().get(b"XObject").unwrap().as_dict().unwrap().clone();
+    assert!(xobjects.get(b"Im1").is_some() && xobjects.get(b"Im2").is_some());
+}
+
+#[test]
+fn email_attachments_and_information_are_embedded() {
+    let doc = reopen(&from_email("mail.eml", &sample_eml(), LETTER, 11.0).unwrap());
+    // The attachments, embedded as they were: the drawn pictures are not among them.
+    let files = embedded_files(&doc);
+    let keys: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(keys, ["forwarded.eml", "logs.pdf"]);
+    let (_, dict, bytes) = &files[1];
+    assert_eq!(bytes, LOGS_PDF);
+    assert_eq!(dict.name(b"Subtype"), Some(&b"application/pdf"[..]));
+    let params = dict.get(b"Params").unwrap().as_dict().unwrap();
+    assert_eq!(params.get(b"Size").unwrap().as_f64(), Some(LOGS_PDF.len() as f64));
+    let Some(Object::String(date)) = params.get(b"ModDate") else { panic!("no ModDate") };
+    assert_eq!(date.to_text(), "D:20261103091422+10'00'");
+    assert_eq!(files[0].2, FORWARDED);
+    assert_eq!(files[0].1.name(b"Subtype"), Some(&b"message/rfc822"[..]));
+    // Document information.
+    let info = doc.resolve(doc.trailer().get(b"Info").unwrap());
+    let info = info.as_dict().unwrap();
+    let text = |k: &[u8]| match info.get(k) {
+        Some(Object::String(s)) => s.to_text(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(text(b"Title"), "RE: Quarterly figures – résumé");
+    assert_eq!(text(b"Author"), "Ada Lovelace <ada@example.com.au>");
+}
+
+/// Pictures are shown at the size the HTML asks for: `width`/`height` attributes, overridden
+/// by the `style`, in CSS pixels; a missing side follows the picture's proportions; a
+/// percentage is ignored; and a size wider than the column is scaled down to it.
+#[test]
+fn email_pictures_are_shown_at_the_size_the_html_asks_for() {
+    let png = b64(&png_bytes(false));
+    let shown = |img: &str| {
+        let eml = format!(
+            "From: a@b.c\r\nSubject: Pic\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+             --R\r\nContent-Type: text/html\r\n\r\n<p>Hello</p>{img}\r\n\r\n\
+             --R\r\nContent-Type: image/png\r\nContent-ID: <p@x>\r\nContent-Transfer-Encoding: base64\r\n\r\n{png}\r\n\r\n--R--\r\n"
+        );
+        let doc = reopen(&from_email("pic.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+        let c = content_bytes(&doc, &pages(&doc)[0]);
+        let text = String::from_utf8_lossy(&c);
+        let (before, _) = text.split_once(" cm /Im1 Do").expect("the picture is drawn");
+        before.split_whitespace().rev().take(6).collect::<Vec<_>>().into_iter().rev().take(4).collect::<Vec<_>>().join(" ")
+    };
+    assert_eq!(shown("<img src=\"cid:p@x\" width=\"80\" height=\"40\">"), "60.00 0 0 30.00");
+    assert_eq!(shown("<img src=\"cid:p@x\" width=\"80\" height=\"40\" style=\"width: 120px; HEIGHT:60px\">"), "90.00 0 0 45.00");
+    assert_eq!(shown("<img src=\"cid:p@x\" width=\"100\">"), "75.00 0 0 37.50", "the height follows the 4 x 2 proportions");
+    assert_eq!(shown("<img src=\"cid:p@x\" style=\"height:12pt\">"), "24.00 0 0 12.00", "12pt is 16 CSS pixels");
+    assert_eq!(shown("<img src=\"cid:p@x\" width=\"50%\">"), "3.00 0 0 1.50", "a percentage is ignored");
+    assert_eq!(shown("<img src=\"cid:p@x\" width=\"5000\" height=\"50\">"), "504.00 0 0 5.04", "wider than the column: scaled down to it");
+}
+
+/// A picture the HTML refers to by Content-ID that PdfCraft can't draw (here a text file) is
+/// shown as its text and still embedded as an attachment: nothing the message carried is lost.
+#[test]
+fn an_undrawable_inline_part_stays_an_attachment() {
+    let eml = "From: a@b.c\r\nSubject: Sig\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+               --R\r\nContent-Type: text/html\r\n\r\n<p>Hello</p><img src=\"cid:odd@x\" alt=\"odd\">\r\n\r\n\
+               --R\r\nContent-Type: text/plain; name=\"odd.txt\"\r\nContent-ID: <odd@x>\r\nContent-Disposition: inline; filename=\"odd.txt\"\r\n\r\nnot a picture\r\n\r\n\
+               --R--\r\n";
+    let doc = reopen(&from_email("sig.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "[image: odd]") && shows(&c, "Attachments: ") && shows(&c, "odd.txt ("), "{}", String::from_utf8_lossy(&c));
+    assert!(!c.windows(4).any(|w| w == b" Do "), "nothing drawn");
+    let files = embedded_files(&doc);
+    assert_eq!(files.len(), 1);
+    assert_eq!((files[0].0.as_str(), files[0].2.as_slice()), ("odd.txt", &b"not a picture\r\n"[..]));
+}
+
+#[test]
+fn plain_text_emails_keep_their_lines_and_quotes() {
+    let eml = b"From: Ada <ada@example.org>\r\nTo: bob@example.org\r\nSubject: Minutes\r\n\r\nFirst point.\r\n\r\n\r\n\r\n> quoted once\r\n>> quoted twice\r\n\tTabbed line\r\n";
+    let doc = reopen(&from_email("minutes.eml", eml, LETTER, 11.0).unwrap());
+    let p = pages(&doc);
+    let c = content_bytes(&doc, &p[0]);
+    assert!(shows(&c, "Ada <ada@example.org>") && shows(&c, "Minutes") && !shows(&c, "Sent: "));
+    assert!(shows(&c, "First point.") && shows(&c, "quoted once") && shows(&c, "quoted twice"));
+    assert!(c.windows(17).any(|w| w == b"BT 1 0 0 1 70.50 "), "{}", String::from_utf8_lossy(&c));
+    assert!(c.windows(17).any(|w| w == b"BT 1 0 0 1 87.00 "), "{}", String::from_utf8_lossy(&c));
+    assert!(shows(&c, "    Tabbed line"), "{}", String::from_utf8_lossy(&c));
+    assert!(!shows(&c, ESCAPED_NOTE), "nothing was escaped");
+    assert!(embedded_files_absent(&doc));
+}
+
+fn embedded_files_absent(doc: &Document) -> bool {
+    doc.get(doc.root().unwrap()).as_dict().unwrap().get(b"Names").is_none()
+}
+
+#[test]
+fn an_email_without_a_body_or_a_subject_still_converts() {
+    let eml = b"From: ada@example.org\r\nMessage-ID: <1@example.org>\r\n\r\n";
+    let doc = reopen(&from_email("Empty Note.eml", eml, LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "(no message body)"), "{}", String::from_utf8_lossy(&c));
+    let info = doc.resolve(doc.trailer().get(b"Info").unwrap());
+    let Some(Object::String(title)) = info.as_dict().unwrap().get(b"Title") else { panic!("no title") };
+    assert_eq!(title.to_text(), "Empty Note", "the file name stands in for the subject");
+}
+
+#[test]
+fn what_is_not_an_email_is_refused() {
+    assert!(matches!(from_email("a.eml", b"", LETTER, 11.0), Err(CreateError::Invalid(m)) if m.contains("not an email message")));
+    assert!(matches!(from_email("a.eml", b"just some words\nwith no header", LETTER, 11.0), Err(CreateError::Invalid(_))));
+    assert!(matches!(from_email("a.eml", &sample_eml(), (1.0, 792.0), 11.0), Err(CreateError::Invalid(_))));
+}
+
+#[test]
+fn long_emails_paginate_and_long_words_break() {
+    let body: String = (0..300).map(|i| format!("<p>Paragraph {i} of the message body.</p>")).collect();
+    let word = "x".repeat(2_000);
+    let eml = format!(
+        "From: a@b.c\r\nSubject: Long\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n<html><body>{body}<p>{word}</p></body></html>\r\n"
+    );
+    let doc = reopen(&from_email("long.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let p = pages(&doc);
+    assert!(p.len() >= 8, "{} pages", p.len());
+    let last = content_bytes(&doc, p.last().unwrap());
+    assert!(shows(&last, "Paragraph 299") || shows(&content_bytes(&doc, &p[p.len() - 2]), "Paragraph 299"));
+    let all: Vec<u8> = p.iter().flat_map(|page| content_bytes(&doc, page)).collect();
+    let xs = all.windows(2000).any(|w| w.iter().all(|&b| b == b'x'));
+    assert!(!xs, "a word wider than the column is broken across lines");
+    assert!(all.iter().filter(|&&b| b == b'x').count() >= 2_000);
+}
+
+/// No prefix of the message, and no bit flipped in it, makes the converter panic. (A dependency
+/// panic would be caught by the engine's guard, but this crate's own code must not need it.)
+#[test]
+fn truncated_and_corrupted_emails_never_panic() {
+    let sample = sample_eml();
+    let mut variants: Vec<Vec<u8>> = (0..sample.len()).step_by(1).map(|n| sample[..n].to_vec()).collect();
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    for _ in 0..200 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let mut v = sample.clone();
+        let at = (seed % sample.len() as u64) as usize;
+        v[at] ^= 1 << ((seed >> 8) % 8);
+        variants.push(v);
+    }
+    assert!(variants.len() >= 1_900);
+    for (i, v) in variants.iter().enumerate() {
+        let r = std::panic::catch_unwind(|| from_email("v.eml", v, LETTER, 11.0).map(|_| ()));
+        assert!(r.is_ok(), "variant {i} panicked");
+    }
+}
+
+#[test]
+fn email_links_show_their_address_only_when_the_text_does_not() {
+    assert!(email::shows_address("the portal", "https://example.com/logs"));
+    assert!(!email::shows_address("https://example.com/", "https://example.com"));
+    assert!(!email::shows_address("www.Example.com", "http://example.com/"));
+    assert!(!email::shows_address("ada@example.org", "mailto:ada@example.org"));
+    assert!(email::shows_address("Ada", "mailto:ada@example.org"));
+    assert!(!email::shows_address("x", "javascript:alert(1)"), "only web, mail and phone addresses are shown");
+    assert_eq!(email::shorten(&"a".repeat(250)).chars().count(), 201);
+}
+
+// ── HTML files ──────────────────────────────────────────────────────────────────────────────
+
+/// A small page: a title with an entity, a heading, bold, a list, a picture carried inline as a
+/// data URI (shown at the size the page asks for), a picture on the web, and a quote.
+fn sample_html() -> String {
+    let png = b64(&png_bytes(false));
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>  Tom &amp; Jerry &#8211; notes\n</title>\
+         <style>p {{ color: red }}</style></head><body><h1>Heading</h1>\
+         <p>First <b>bold</b> paragraph with a <a href=\"https://example.com/a\">link</a>.</p>\
+         <ul><li>One</li><li>Two</li></ul>\
+         <p><img src=\"data:image/png;base64,{png}\" width=\"80\" height=\"40\" alt=\"Inline\"></p>\
+         <p><img src=\"https://example.com/remote.png\" alt=\"Remote\"></p>\
+         <blockquote><p>Quoted.</p></blockquote>\
+         <script>document.write('never')</script></body></html>"
+    )
+}
+
+#[test]
+fn html_files_become_a_pdf_with_their_title_text_and_pictures() {
+    let doc = reopen(&from_html("page.html", sample_html().as_bytes(), LETTER, 11.0).unwrap());
+    let p = pages(&doc);
+    assert_eq!(p.len(), 1);
+    let c = content_bytes(&doc, &p[0]);
+    assert!(
+        c.windows(25).any(|w| w == b"/F2 11.00 Tf (Heading) Tj") && !shows(&c, "# Heading"),
+        "a heading is bold, without html2text's marker: {}",
+        String::from_utf8_lossy(&c)
+    );
+    assert!(shows(&c, "First ") && shows(&c, "• One") && shows(&c, "Quoted."), "{}", String::from_utf8_lossy(&c));
+    assert!(c.windows(22).any(|w| w == b"/F2 11.00 Tf (bold) Tj"), "{}", String::from_utf8_lossy(&c));
+    assert!(shows(&c, "link <https://example.com/a>"));
+    assert!(
+        shows(&c, "q 60.00 0 0 30.00 ") && c.windows(8).any(|w| w == b"/Im1 Do "),
+        "the inline picture at 80 x 40 CSS pixels: {}",
+        String::from_utf8_lossy(&c)
+    );
+    assert!(c.windows(33).any(|w| w == b"/F3 11.00 Tf ([image: Remote]) Tj"), "a web picture is its text");
+    assert!(!shows(&c, "never") && !shows(&c, "color: red"), "scripts and styles are not text");
+    assert!(
+        c.windows(17).any(|w| w == b"BT 1 0 0 1 72.00 ") && c.windows(17).any(|w| w == b"BT 1 0 0 1 88.50 "),
+        "one-inch margins, a quote indented"
+    );
+    let info = doc.resolve(doc.trailer().get(b"Info").unwrap());
+    let Some(Object::String(title)) = info.as_dict().unwrap().get(b"Title") else { panic!("no title") };
+    assert_eq!(title.to_text(), "Tom & Jerry – notes");
+    assert!(embedded_files_absent(&doc));
+}
+
+#[test]
+fn html_files_without_a_title_or_in_a_windows_code_page_still_convert() {
+    let doc = reopen(&from_html("Old Notes.htm", b"<p>Caf\xe9 cr\xe8me</p>", LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "Café crème"), "{}", String::from_utf8_lossy(&c));
+    let info = doc.resolve(doc.trailer().get(b"Info").unwrap());
+    let Some(Object::String(title)) = info.as_dict().unwrap().get(b"Title") else { panic!("no title") };
+    assert_eq!(title.to_text(), "Old Notes", "the file name stands in for the title");
+    // Plain text named .html is still text; an empty file is refused; so is a blank page.
+    let doc = reopen(&from_html("t.html", b"just words", LETTER, 11.0).unwrap());
+    assert!(shows(&content_bytes(&doc, &pages(&doc)[0]), "just words"));
+    assert!(matches!(from_html("e.html", b"  \n", LETTER, 11.0), Err(CreateError::Invalid(m)) if m.contains("empty")));
+    let doc = reopen(&from_html("b.html", b"<html><body></body></html>", LETTER, 11.0).unwrap());
+    assert!(shows(&content_bytes(&doc, &pages(&doc)[0]), "(the file has no text)"));
+}
+
+#[test]
+fn html_titles_decode_entities_and_are_bounded() {
+    assert_eq!(
+        email::html_title("<TITLE>A &lt;b&gt; &quot;c&quot; &#x41;&#66; &unknown; &amp</TITLE>"),
+        Some("A <b> \"c\" AB &unknown; &amp".into())
+    );
+    assert_eq!(email::html_title("<title></title><p>x</p>"), None);
+    assert_eq!(email::html_title("<p>no title</p>"), None);
+    assert_eq!(email::html_title("<title>unterminated"), Some("unterminated".into()));
+    assert_eq!(email::html_title(&format!("<title>{}</title>", "x".repeat(900))).map(|t| t.chars().count()), Some(500));
+}
+
+#[test]
+fn truncated_and_corrupted_html_never_panics() {
+    let sample = sample_html().into_bytes();
+    let mut variants: Vec<Vec<u8>> = (0..sample.len()).map(|n| sample[..n].to_vec()).collect();
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    for _ in 0..200 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let mut v = sample.clone();
+        let at = (seed % sample.len() as u64) as usize;
+        v[at] ^= 1 << ((seed >> 8) % 8);
+        variants.push(v);
+    }
+    for (i, v) in variants.iter().enumerate() {
+        let r = std::panic::catch_unwind(|| from_html("v.html", v, LETTER, 11.0).map(|_| ()));
+        assert!(r.is_ok(), "variant {i} panicked");
+    }
+}
+
+// ── codescan characterisation ───────────────────────────────────────────────────────────────
+//
+// These pin what the email and HTML importers do today for inputs the tests above don't
+// reach, so that a later change shows as a diff. Where the pinned output looks wrong the test
+// says so: a pin is a record, not an endorsement.
+
+/// The literal strings of a content stream, unescaped: `(a \(b\)) Tj` gives `a (b)`.
+fn literals(content: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut current: Option<Vec<u8>> = None;
+    let mut escaped = false;
+    for &b in content {
+        match (&mut current, escaped, b) {
+            (None, _, b'(') => current = Some(Vec::new()),
+            (None, _, _) => {}
+            (Some(s), true, _) => {
+                s.push(match b {
+                    b'n' => b'\n',
+                    b'r' => b'\r',
+                    other => other,
+                });
+                escaped = false;
+            }
+            (Some(_), false, b'\\') => escaped = true,
+            (Some(_), false, b')') => out.push(current.take().unwrap_or_default()),
+            (Some(s), false, _) => s.push(b),
+        }
+    }
+    out
+}
+
+/// The document-level attachments' file specifications: name-tree key and dictionary.
+fn attachment_specs(doc: &Document) -> Vec<(String, Dict)> {
+    let root = doc.get(doc.root().unwrap());
+    let names = root.as_dict().unwrap().get(b"Names").unwrap().as_dict().unwrap().clone();
+    let tree = doc.resolve(names.get(b"EmbeddedFiles").unwrap());
+    let entries = tree.as_dict().unwrap().get(b"Names").unwrap().as_array().unwrap().clone();
+    entries
+        .chunks(2)
+        .map(|pair| {
+            let Object::String(key) = &pair[0] else { panic!("key") };
+            (key.to_text(), doc.resolve(&pair[1]).as_dict().unwrap().clone())
+        })
+        .collect()
+}
+
+/// The `/Title` of the document information dictionary.
+fn title_of(doc: &Document) -> String {
+    let info = doc.resolve(doc.trailer().get(b"Info").unwrap());
+    let Some(Object::String(title)) = info.as_dict().unwrap().get(b"Title") else { panic!("no title") };
+    title.to_text()
+}
+
+/// Recipients only in Bcc are printed as a Bcc row (the module doc lists no such row); a
+/// group is flattened to its members and an empty one (`undisclosed-recipients:;`) gives no
+/// row; a display name that is the address is not repeated; a subject of spaces is no subject
+/// (the file stem is the title); a date that doesn't parse gives no Sent row.
+#[test]
+fn an_email_with_only_bcc_recipients_a_group_and_an_unreadable_date() {
+    let eml = b"From: Ada Lovelace <ada@example.org>\r\nTo: undisclosed-recipients:;\r\n\
+                Bcc: Ivy <ivy@example.org>, team: ted@example.org, tom@example.org;, bob@example.org <bob@example.org>\r\n\
+                Subject:    \r\nDate: not a date\r\nMIME-Version: 1.0\r\n\r\nBody line.\r\n";
+    let doc = reopen(&from_email("Sent Note.eml", eml, LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(shows(&c, "From: ") && shows(&c, "Ada Lovelace <ada@example.org>"), "{text}");
+    assert!(!shows(&c, "To: ") && !shows(&c, "Sent: ") && !shows(&c, "Subject: "), "{text}");
+    assert!(shows(&c, "Bcc: ") && shows(&c, "Ivy <ivy@example.org>, ted@example.org, tom@example.org, bob@example.org"), "{text}");
+    assert!(shows(&c, "Body line.") && !shows(&c, ESCAPED_NOTE), "{text}");
+    assert_eq!(title_of(&doc), "Sent Note");
+    assert!(embedded_files_absent(&doc));
+}
+
+/// The body is the HTML alternative whichever order the parts come in; an HTML part that says
+/// nothing falls back to the plain-text alternative, through a multipart/mixed wrapper; a
+/// message whose only part is a blank HTML one is "(no message body)". A nameless attachment
+/// of a type with no known extension is `attachment-N`, bare.
+#[test]
+fn a_blank_html_alternative_falls_back_to_the_plain_text_one() {
+    let alt = |html: &str, plain: &str| {
+        format!("--A\r\nContent-Type: text/html\r\n\r\n{html}\r\n\r\n--A\r\nContent-Type: text/plain\r\n\r\n{plain}\r\n\r\n--A--\r\n")
+    };
+    let eml = format!(
+        "From: a@b.c\r\nSubject: Alt\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n\
+         --M\r\nContent-Type: multipart/alternative; boundary=\"A\"\r\n\r\n{}\r\n\
+         --M\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment\r\n\r\nraw\r\n\r\n--M--\r\n",
+        alt("<html><body><div></div></body></html>", "The plain fallback.")
+    );
+    let doc = reopen(&from_email("alt.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "The plain fallback.") && shows(&c, "Attachments: ") && shows(&c, "attachment-1 (5 B)"), "{}", String::from_utf8_lossy(&c));
+    let files = embedded_files(&doc);
+    assert_eq!(files.len(), 1);
+    assert_eq!(
+        (files[0].0.as_str(), files[0].1.name(b"Subtype"), files[0].2.as_slice()),
+        ("attachment-1", Some(&b"application/octet-stream"[..]), &b"raw\r\n"[..])
+    );
+
+    let eml = format!(
+        "From: a@b.c\r\nSubject: Order\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"A\"\r\n\r\n{}",
+        alt("<p>The HTML one.</p>", "The plain one.")
+    );
+    let doc = reopen(&from_email("order.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "The HTML one.") && !shows(&c, "The plain one."), "{}", String::from_utf8_lossy(&c));
+
+    let eml = b"From: a@b.c\r\nSubject: Blank\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n<html><body><div></div></body></html>\r\n";
+    let doc = reopen(&from_email("blank.eml", eml, LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "(no message body)"), "{}", String::from_utf8_lossy(&c));
+}
+
+/// A single-byte charset is decoded, and so is a multi-byte one (Shift_JIS here): the Japanese
+/// reaches the page as `[U+XXXX]` code points with the note, not as replacement characters.
+#[test]
+fn multi_byte_charsets_are_decoded() {
+    let eml = |charset: &str, body: &[u8]| {
+        let mut v =
+            format!("From: a@b.c\r\nSubject: Charset\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset={charset}\r\n\r\n").into_bytes();
+        v.extend_from_slice(body);
+        v
+    };
+    let doc = reopen(&from_email("latin1.eml", &eml("iso-8859-1", b"caf\xe9\r\n"), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "café") && !shows(&c, ESCAPED_NOTE), "{}", String::from_utf8_lossy(&c));
+    let doc = reopen(&from_email("sjis.eml", &eml("shift_jis", b"\x93\xfa\x96\x7b\r\n"), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "[U+65E5][U+672C]") && !shows(&c, "[U+FFFD]") && shows(&c, ESCAPED_NOTE), "{}", String::from_utf8_lossy(&c));
+}
+
+/// Attachment names are labels: a folder path is cut to its file name; a nameless part is
+/// `attachment-N` (N counting every attachment) with the extension its type suggests, or none;
+/// an RFC 2231 name keeps its characters in the name tree while the Attachments row escapes
+/// what Helvetica can't draw; a Content-Description is the `/Desc`, trimmed; and two parts of
+/// one name are listed under it twice on the page but keyed `name` and `name (2)` in the tree,
+/// which sorts bytewise with the non-ASCII key last.
+#[test]
+fn attachment_names_descriptions_and_duplicates() {
+    let eml = "From: a@b.c\r\nSubject: Files\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n\
+               --M\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\r\n\
+               --M\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment\r\n\r\n%PDF-1.4 nameless\r\n\r\n\
+               --M\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=\"C:\\\\Users\\\\x\\\\..\\\\..\\\\secret.txt\"\r\n\
+               Content-Description:  Path stripped \r\n\r\npath\r\n\r\n\
+               --M\r\nContent-Type: text/plain; name=\"dup.txt\"\r\nContent-Disposition: attachment\r\n\r\nfirst\r\n\r\n\
+               --M\r\nContent-Type: text/plain; name=\"dup.txt\"\r\nContent-Disposition: attachment\r\n\r\nsecond\r\n\r\n\
+               --M\r\nContent-Type: application/x-foo\r\nContent-Disposition: attachment\r\n\r\nfoo\r\n\r\n\
+               --M\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename*=UTF-8''r%C3%A9sum%C3%A9%20%E2%80%93%20%E7%AC%AC.pdf\r\n\r\n\
+               %PDF-1.4 utf\r\n\r\n--M--\r\n";
+    let doc = reopen(&from_email("files.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    for piece in ["attachment-1.pdf", "secret.txt", "attachment-5", "[U+7B2C].pdf", ESCAPED_NOTE] {
+        assert!(shows(&c, piece), "{piece}: {text}");
+    }
+    assert!(!shows(&c, "dup.txt (2)") && !shows(&c, "Users"), "{text}");
+    let files = embedded_files(&doc);
+    let keys: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(keys, ["attachment-1.pdf", "attachment-5", "dup.txt", "dup.txt (2)", "secret.txt", "résumé – 第.pdf"]);
+    assert_eq!((files[0].2.as_slice(), files[1].1.name(b"Subtype")), (&b"%PDF-1.4 nameless\r\n"[..], Some(&b"application/x-foo"[..])));
+    assert_eq!((files[2].2.as_slice(), files[3].2.as_slice()), (&b"first\r\n"[..], &b"second\r\n"[..]));
+    let specs = attachment_specs(&doc);
+    let desc = |i: usize| match specs[i].1.get(b"Desc") {
+        Some(Object::String(s)) => Some(s.to_text()),
+        _ => None,
+    };
+    assert_eq!((specs[4].0.as_str(), desc(4)), ("secret.txt", Some("Path stripped".into())));
+    assert!((0..6).filter(|&i| i != 4).all(|i| desc(i).is_none()));
+    let Some(Object::String(f)) = specs[5].1.get(b"F") else { panic!("no /F") };
+    assert_eq!(f.to_text(), "résumé – 第.pdf");
+}
+
+/// Pictures the body refers to: a Content-ID part is drawn whatever its disposition and `CID:`
+/// in capitals is a Content-ID too (a drawn picture is not also a file); a `data:` URI in a
+/// message is drawn like one in a file; and an inline part no `<img>` refers to is a file.
+#[test]
+fn email_pictures_by_disposition_scheme_case_and_data_uri() {
+    let png = b64(&png_bytes(false));
+    let eml = format!(
+        "From: a@b.c\r\nSubject: Pics\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n\
+         --M\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+         --R\r\nContent-Type: text/html\r\n\r\n<p>Hi</p><img src=\"cid:att@x\" alt=\"att\"><img src=\"CID:upper@x\" alt=\"upper\">\
+         <img src=\"data:image/png;base64,{png}\" alt=\"inline data\">\r\n\r\n\
+         --R\r\nContent-Type: image/png; name=\"unref.png\"\r\nContent-ID: <unref@x>\r\nContent-Disposition: inline; filename=\"unref.png\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{png}\r\n\r\n\
+         --R\r\nContent-Type: image/png; name=\"upper.png\"\r\nContent-ID: <upper@x>\r\nContent-Disposition: inline; filename=\"upper.png\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{png}\r\n\r\n\
+         --R--\r\n\r\n\
+         --M\r\nContent-Type: image/png; name=\"att.png\"\r\nContent-ID: <att@x>\r\nContent-Disposition: attachment; filename=\"att.png\"\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\n{png}\r\n\r\n--M--\r\n"
+    );
+    let doc = reopen(&from_email("pics.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(shows(&c, "Attachments: ") && shows(&c, "unref.png (96 B)") && !shows(&c, "upper.png") && !shows(&c, "att.png"), "{text}");
+    assert_eq!(text.matches(" Do ").count(), 3, "{text}");
+    assert!(text.contains("/Im3 Do") && !text.contains("/Im4"), "{text}");
+    assert!(!shows(&c, "[image: upper]") && !shows(&c, "[image: inline data]") && !shows(&c, "[image: att]"), "{text}");
+    let keys: Vec<String> = embedded_files(&doc).into_iter().map(|f| f.0).collect();
+    assert_eq!(keys, ["unref.png"]);
+}
+
+/// At most 1 000 attachments are embedded: the 1 001st is left out, and the Attachments row
+/// says how many were.
+#[test]
+fn only_the_first_thousand_attachments_are_embedded() {
+    let mut eml = String::from(
+        "From: a@b.c\r\nSubject: Many\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"M\"\r\n\r\n--M\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\r\n",
+    );
+    for i in 1..=1001 {
+        eml.push_str(&format!("--M\r\nContent-Type: text/plain; name=\"a{i:04}.txt\"\r\nContent-Disposition: attachment\r\n\r\n{i}\r\n\r\n"));
+    }
+    eml.push_str("--M--\r\n");
+    let doc = reopen(&from_email("many.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let files = embedded_files(&doc);
+    assert_eq!(files.len(), 1000);
+    assert_eq!((files[0].0.as_str(), files[999].0.as_str()), ("a0001.txt", "a1000.txt"));
+    let all: Vec<u8> = pages(&doc).iter().flat_map(|page| content_bytes(&doc, page)).collect();
+    // The row wraps over many lines: read its words back from the literals, one space apart.
+    let words = literals(&all).join(&b' ').into_iter().fold(Vec::new(), |mut acc: Vec<u8>, b| {
+        if b != b' ' || acc.last() != Some(&b' ') {
+            acc.push(b);
+        }
+        acc
+    });
+    let shown = |needle: &str| {
+        let needle = win_ansi(needle);
+        words.windows(needle.len()).any(|w| w == needle.as_slice())
+    };
+    assert!(
+        shown("a1000.txt (6 B) (and 1 more, not embedded)") && !shown("a1001"),
+        "the page lists the thousand that were embedded and counts the rest"
+    );
+}
+
+/// A font size that is not finite or not positive is 11 pt; one outside 4 to 72 pt is clamped.
+#[test]
+fn font_sizes_outside_the_range_are_defaulted_or_clamped() {
+    for (size, shown) in [(f64::NAN, "11.00"), (0.0, "11.00"), (-3.0, "11.00"), (f64::INFINITY, "11.00"), (1.0, "4.00"), (100.0, "72.00")] {
+        let doc = reopen(&from_email("f.eml", b"From: a@b.c\r\n\r\nx\r\n", LETTER, size).unwrap());
+        let text = String::from_utf8_lossy(&content_bytes(&doc, &pages(&doc)[0])).into_owned();
+        assert!(text.contains(&format!("/F2 {shown} Tf (From: ) Tj")), "{size}: {text}");
+        let doc = reopen(&from_html("f.html", b"<p>x</p>", LETTER, size).unwrap());
+        let text = String::from_utf8_lossy(&content_bytes(&doc, &pages(&doc)[0])).into_owned();
+        assert!(text.contains(&format!("/F1 {shown} Tf (x) Tj")), "{size}: {text}");
+    }
+}
+
+/// A plain-text quote forty levels deep is indented half the column and no more; an HTML
+/// quote three deep is indented three steps; and nested list items are bulleted and indented
+/// one step per level.
+#[test]
+fn quote_indents_are_capped_and_nested_list_items_are_indented() {
+    let eml = format!("From: a@b.c\r\n\r\n{} deep\r\n", ">".repeat(40));
+    let doc = reopen(&from_email("q.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "BT 1 0 0 1 306.00 ") && shows(&c, "deep"), "{}", String::from_utf8_lossy(&c));
+
+    let eml = "From: a@b.c\r\nContent-Type: text/html\r\n\r\n<blockquote><blockquote><blockquote><p>three deep</p></blockquote></blockquote></blockquote>\
+               <ul><li>a<ul><li>b<ul><li>c</li></ul></li></ul></li></ul>\r\n";
+    let doc = reopen(&from_email("q.eml", eml.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(shows(&c, "BT 1 0 0 1 103.50 ") && shows(&c, "three deep"), "{text}");
+    assert!(shows(&c, "• a") && shows(&c, "• b") && shows(&c, "• c"), "{text}");
+    assert_eq!(text.matches("BT 1 0 0 1 54.00 ").count(), 2, "the From row and the first item at the margin: {text}");
+    assert!(text.contains("BT 1 0 0 1 70.50 ") && text.contains("BT 1 0 0 1 87.00 "), "the nested items one step in each: {text}");
+}
+
+/// A `<base>` tag is not applied: a link relative to it has no web address to show, and a
+/// picture relative to it is its text (nothing is fetched either way).
+#[test]
+fn html_base_tags_are_ignored_and_relative_sources_stay_text() {
+    let html = "<html><head><base href=\"https://example.com/dir/\"><title>Based</title></head>\
+                <body><p>See <a href=\"page.html\">the page</a> and <a href=\"/root\">root</a>.</p><img src=\"pic.png\" alt=\"rel\"></body></html>";
+    let doc = reopen(&from_html("b.html", html.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(shows(&c, "See the page and root.") && shows(&c, "[image: rel]") && !shows(&c, "example.com"), "{text}");
+    assert!(!text.contains(" Do "), "{text}");
+    assert_eq!(title_of(&doc), "Based");
+}
+
+/// Nested tables read cell by cell in document order, the inner table's cells where it sits;
+/// ordered lists keep html2text's numbering as text; every heading level is bold; `<br>`
+/// breaks the line; `<hr>` draws nothing at all; preformatted text keeps its spaces.
+#[test]
+fn html_nested_tables_ordered_lists_breaks_rules_and_preformatted_text() {
+    let html = "<table><tr><td>A1</td><td><table><tr><td>B1</td><td>B2</td></tr></table></td></tr><tr><td>A2</td><td>A3</td></tr></table>\
+                <ol><li>First</li><li>Second</li></ol><h6>Six</h6><h2>Two</h2><p>line one<br>line two</p><hr><pre>  col1   col2\n  x      y</pre>";
+    let doc = reopen(&from_html("t.html", html.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    let at = |s: &str| text.find(s).unwrap_or_else(|| panic!("{s}: {text}"));
+    let order =
+        ["(A1)", "(B1)", "(B2)", "(A2)", "(A3)", "(1. First)", "(2. Second)", "/F2 11.00 Tf (Six)", "/F2 11.00 Tf (Two)", "(line one)", "(line two)"];
+    assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{text}");
+    assert_eq!(text.matches("BT 1 0 0 1 72.00 ").count(), 13, "every cell, item, heading and line on its own line: {text}");
+    assert!(!text.contains(" l S ") && !shows(&c, "--") && !shows(&c, "[U+2500]"), "an <hr> is nothing: {text}");
+    assert!(shows(&c, "  col1   col2") && shows(&c, "  x      y"), "{text}");
+}
+
+/// Text that begins the way html2text marks structure in plain text (`# `, `* `, `> `) stays
+/// text: structure is read from the decorator's own marks, which user text can't produce.
+#[test]
+fn html_text_that_looks_like_a_marker_stays_text() {
+    let html = "<p># not a heading</p><p>* starred</p><p>&gt; quoted?</p><p>#hashtag</p><p>1. numbered</p>";
+    let doc = reopen(&from_html("m.html", html.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(text.contains("/F1 11.00 Tf (# not a heading) Tj") && !text.contains("/F2"), "{text}");
+    assert!(shows(&c, "* starred") && !shows(&c, "• starred"), "{text}");
+    assert!(!text.contains("BT 1 0 0 1 88.50 ") && shows(&c, "> quoted?"), "{text}");
+    assert!(text.contains("Tf (#hashtag) Tj") && text.contains("Tf (1. numbered) Tj"), "{text}");
+}
+
+/// Sizes an HTML file asks for: `em` is ignored; `auto`, `0` and anything over 10 000 leave
+/// that side to the picture's proportions; `!important` is read past; a picture taller than
+/// 60 % of the inner height is scaled to it; and two `<img>` of one source side by side are
+/// drawn once (html2text joins the two runs into one; pinned as it is).
+#[test]
+fn html_picture_sizes_in_em_auto_important_zero_and_beyond_the_cap() {
+    let png = b64(&png_bytes(false));
+    let d = format!("data:image/png;base64,{png}");
+    let drawn = |img: &str| {
+        let doc = reopen(&from_html("s.html", format!("<p>Hello</p>{img}").as_bytes(), LETTER, 11.0).unwrap());
+        let c = content_bytes(&doc, &pages(&doc)[0]);
+        let text = String::from_utf8_lossy(&c);
+        text.lines().filter(|l| l.contains(" Do ")).map(|l| l.split(" cm ").next().unwrap_or("").to_string()).collect::<Vec<_>>().join(" | ")
+    };
+    assert_eq!(drawn(&format!("<img src=\"{d}\" style=\"width: 12em\">")), "q 3.00 0 0 1.50 72.00 696.17");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" width=\"auto\" height=\"40\">")), "q 60.00 0 0 30.00 72.00 667.67");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" width=\"0\" height=\"40\">")), "q 60.00 0 0 30.00 72.00 667.67");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" width=\"20000\" height=\"40\">")), "q 60.00 0 0 30.00 72.00 667.67");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" style=\"width: 120px !important; height: 60px\">")), "q 90.00 0 0 45.00 72.00 652.67");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" style=\"width: 40px !important\">")), "q 30.00 0 0 15.00 72.00 682.67", "!important is read past");
+    assert_eq!(drawn(&format!("<img src=\"{d}\" width=\"100\" height=\"2000\">")), "q 19.44 0 0 388.80 72.00 308.87", "60 % of 648 pt");
+    assert_eq!(
+        drawn(&format!("<img src=\"{d}\" width=\"80\" height=\"40\"><img src=\"{d}\" width=\"8\" height=\"4\">")),
+        "q 60.00 0 0 30.00 72.00 667.67"
+    );
+}
+
+/// A `data:` URI is drawn only as standard base64 of a picture Create can embed: `;BASE64` in
+/// capitals and a line-wrapped payload are fine, and the media type may be missing (the bytes
+/// are sniffed); a percent-encoded, SVG, URL-safe-base64 or non-image payload is its text.
+#[test]
+fn html_data_uris_that_are_not_standard_base64_pictures_stay_text() {
+    let png = b64(&png_bytes(false));
+    let wrapped: String = png.as_bytes().chunks(10).map(|c| String::from_utf8_lossy(c).into_owned()).collect::<Vec<_>>().join("\n");
+    let url_safe = png.replace('+', "-").replace('/', "_");
+    assert_ne!(url_safe, png, "the sample uses both characters the alphabets differ in");
+    let html = format!(
+        "<p>Hi</p><img src=\"data:image/png,%89PNG\" alt=\"percent\"><img src=\"data:image/svg+xml,<svg/>\" alt=\"svg\">\
+         <img src=\"data:text/plain;base64,aGVsbG8=\" alt=\"text\"><img src=\"data:image/png;base64,{url_safe}\" alt=\"safe\">\
+         <img src=\"data:image/png;BASE64,{png}\" alt=\"upper\"><img src=\"data:image/png;base64,{wrapped}\" alt=\"wrapped\">\
+         <img src=\"data:;base64,{png}\" alt=\"untyped\">"
+    );
+    let doc = reopen(&from_html("d.html", html.as_bytes(), LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    for alt in ["percent", "svg", "text", "safe"] {
+        assert!(shows(&c, &format!("[image: {alt}]")), "{alt}: {text}");
+    }
+    for alt in ["upper", "wrapped", "untyped"] {
+        assert!(!shows(&c, &format!("[image: {alt}]")), "{alt}: {text}");
+    }
+    assert_eq!(text.matches(" Do ").count(), 3, "{text}");
+    assert!(text.contains("/Im3 Do") && !text.contains("/Im4"), "{text}");
+}
+
+/// The title is the first real `<title>`: not one inside a comment, not a `<titles>` tag; control
+/// characters are dropped from it; an attribute on the tag is fine.
+#[test]
+fn html_titles_in_comments_and_odd_tags_are_not_read() {
+    assert_eq!(email::html_title("<!-- <title>Commented</title> --><title>Real</title>"), Some("Real".into()));
+    assert_eq!(email::html_title("<titles>x</titles><title>y</title>"), Some("y".into()));
+    assert_eq!(email::html_title("<title>A&#0;B&#xD800;C&#x1F600;D</title>"), Some("AB&#xD800;C\u{1F600}D".into()));
+    assert_eq!(email::html_title("<title lang=\"en\">Attr</title>"), Some("Attr".into()));
+    assert_eq!(email::html_title("<!-- open comment <title>x</title>"), None, "an unterminated comment hides the rest");
+    let doc = reopen(&from_html("c.html", b"<!-- <title>Commented</title> --><title>Real</title><p>x</p>", LETTER, 11.0).unwrap());
+    assert_eq!(title_of(&doc), "Real");
+}
+
+/// `<meta charset>` (and the `content="…; charset=…"` form) in the first kilobyte decides the
+/// encoding, as a browser's prescan does: ISO-8859-2 bytes read `łódź` (the two letters
+/// Helvetica lacks as code points), not `³ód¼`; a byte order mark wins over the meta; a UTF-16
+/// label is read as UTF-8; an unknown label falls back to the guess.
+#[test]
+fn html_meta_charset_is_read() {
+    let content = |bytes: &[u8]| {
+        let doc = reopen(&from_html("c.html", bytes, LETTER, 11.0).unwrap());
+        content_bytes(&doc, &pages(&doc)[0])
+    };
+    let c = content(b"<html><head><meta charset=\"iso-8859-2\"></head><body><p>\xb3\xf3d\xbc</p></body></html>");
+    assert!(shows(&c, "[U+0142]\u{f3}d[U+017A]") && !shows(&c, "\u{b3}\u{f3}d\u{bc}"), "{}", String::from_utf8_lossy(&c));
+    let c = content(
+        b"<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=ISO-8859-2\"></head><body><p>\xb3\xf3d\xbc</p></body></html>",
+    );
+    assert!(shows(&c, "[U+0142]\u{f3}d[U+017A]"), "the content= form: {}", String::from_utf8_lossy(&c));
+    let c = content(b"\xef\xbb\xbf<meta charset=\"iso-8859-2\"><p>caf\xc3\xa9</p>");
+    assert!(shows(&c, "caf\u{e9}"), "a byte order mark wins: {}", String::from_utf8_lossy(&c));
+    let c = content(b"<meta charset=\"utf-16\"><p>caf\xc3\xa9</p>");
+    assert!(shows(&c, "caf\u{e9}"), "a utf-16 label reads as UTF-8: {}", String::from_utf8_lossy(&c));
+    let c = content(b"<meta charset=\"x-no-such\"><p>Cr\xe8me</p>");
+    assert!(shows(&c, "Cr\u{e8}me"), "an unknown label: the usual guess: {}", String::from_utf8_lossy(&c));
+}
+
+/// A link's address is shown once, after every run of its text (a bold word and a plain one
+/// here); a phone address is shown with its spaces; a `mailto:` the text spells out and an
+/// `ftp:` address are not shown.
+#[test]
+fn html_links_spanning_runs_show_their_address_once() {
+    let html = b"<p><a href=\"https://example.com/x\"><b>Bold</b> link</a> and <a href=\"mailto:a@b.c\">a@b.c</a> and \
+                 <a href=\"tel:+61 7 3620 2000\">(07) 3620 2000</a> and <a href=\"ftp://example.com/f\">ftp</a>.</p>";
+    let doc = reopen(&from_html("l.html", html, LETTER, 11.0).unwrap());
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    let text = String::from_utf8_lossy(&c);
+    assert!(text.contains("/F2 11.00 Tf (Bold) Tj"), "{text}");
+    assert!(shows(&c, " link <https://example.com/x> and a@b.c and (07) 3620 2000 <tel:+61 7 3620 2000> and "), "{text}");
+    assert!(shows(&c, "ftp.") && !shows(&c, "ftp:") && !shows(&c, "mailto:"), "{text}");
+    assert_eq!(text.matches("example.com/x").count(), 1, "{text}");
+}
+
+/// A picture that doesn't fit what is left of a page starts the next, at its top, and the text
+/// goes on under it.
+#[test]
+fn html_pictures_that_do_not_fit_the_page_start_the_next() {
+    let png = b64(&png_bytes(false));
+    let paragraphs: String = (0..30).map(|i| format!("<p>Paragraph {i}.</p>")).collect();
+    let html = format!("{paragraphs}<img src=\"data:image/png;base64,{png}\" width=\"100\" height=\"2000\" alt=\"tall\"><p>After.</p>");
+    let doc = reopen(&from_html("p.html", html.as_bytes(), LETTER, 11.0).unwrap());
+    let p = pages(&doc);
+    assert_eq!(p.len(), 2);
+    let first = content_bytes(&doc, &p[0]);
+    assert!(shows(&first, "Paragraph 29.") && !first.windows(4).any(|w| w == b" Do "), "{}", String::from_utf8_lossy(&first));
+    let second = String::from_utf8_lossy(&content_bytes(&doc, &p[1])).into_owned();
+    assert!(second.starts_with("q 19.44 0 0 388.80 72.00 329.00 cm /Im1 Do Q\n"), "{second}");
+    assert!(second.contains("BT 1 0 0 1 72.00 302.16 Tm\n/F1 11.00 Tf (After.) Tj"), "{second}");
+}
