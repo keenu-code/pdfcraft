@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-11-04 | **Last updated:** 2026-11-04 | **Change:** minor (M10: Create PDF from an email message (.eml): headers, HTML or text body, embedded pictures, attachments embedded in the PDF; and from an HTML file on the same pipeline (#3199, #5353, #6064); by every open route and `doc_create from: email | html`; estimates unchanged)
+
 > **Last reviewed:** 2026-11-01 | **Last updated:** 2026-11-01 | **Change:** patch (M7, PR #2155 further review: inherited drawing/text state, affine image gestures, paste/selection ownership, no-op scripts and menu permissions; estimates unchanged)
 
 > **Last reviewed:** 2026-11-01 | **Last updated:** 2026-11-01 | **Change:** patch (M7, PR #2155 latest comments: explicit image-paste events, mixed-size field refresh, and documented mixed-script normalization with Undo; estimates unchanged)

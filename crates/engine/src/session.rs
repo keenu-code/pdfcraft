@@ -45,4 +45,7 @@ pub struct Session {
     /// What the XFA scripts' time limits are multiplied by (`None`: 1); see
     /// [`Session::with_xfa_time_scale`].
     pub(crate) xfa_time_scale: Option<u32>,
+    /// The paper new documents made from other files (an email message) are set on, in points;
+    /// `None` is US Letter. The app sets the system region's paper ([`Session::set_paper`]).
+    paper: Option<(f64, f64)>,
 }

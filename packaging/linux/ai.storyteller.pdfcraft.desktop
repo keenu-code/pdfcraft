@@ -11,4 +11,4 @@ StartupNotify=true
 StartupWMClass=ai.storyteller.pdfcraft
 Categories=Office;Viewer;
 Keywords=pdf;viewer;editor;annotate;sign;forms;merge;split;
-MimeType=application/pdf;
+MimeType=application/pdf;message/rfc822;

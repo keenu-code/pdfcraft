@@ -4112,6 +4112,52 @@ fn creating_and_reducing_through_tools() {
 }
 
 #[test]
+fn creating_from_an_email_message_through_tools() {
+    let dir = workdir("create-email");
+    let eml = "From: Ada <ada@example.org>\r\nTo: bob@example.org\r\nSubject: Site minutes\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\n\
+               Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>First <b>point</b>.</p>\r\n\r\n\
+               --B\r\nContent-Type: text/plain; name=\"notes.txt\"\r\nContent-Disposition: attachment; filename=\"notes.txt\"\r\n\r\nthe notes\r\n\r\n--B--\r\n";
+    std::fs::write(dir.join("minutes.eml"), eml).unwrap();
+    let mut a = auto(&dir);
+    let created = ok(&mut a, "doc_create", json!({ "from": "email", "path": "minutes.eml" }));
+    assert_eq!((created["pages"].as_u64(), created["dirty"].as_bool()), (Some(1), Some(true)), "{created}");
+    let doc = created["doc"].as_u64().unwrap();
+    let text = page_text(&mut a, doc).join("\n");
+    for needle in ["From:", "Ada <ada@example.org>", "Subject:", "Site minutes", "First", "point", "Attachments:", "notes.txt"] {
+        assert!(text.contains(needle), "{needle:?} in {text:?}");
+    }
+    // The attachment travelled into the PDF (the Attachments panel lists it).
+    let info = ok(&mut a, "doc_info", json!({ "doc": doc }));
+    assert!(info["attachments"].to_string().contains("notes.txt"), "{info}");
+    // An email needs a path; bytes with no header are not a message; the path stays under --root.
+    assert!(matches!(a.call("doc_create", &json!({ "from": "email" })), Err(ToolError::InvalidArgs(_))));
+    std::fs::write(dir.join("junk.eml"), "no headers at all").unwrap();
+    assert!(matches!(a.call("doc_create", &json!({ "from": "email", "path": "junk.eml" })), Err(ToolError::InvalidArgs(_))));
+    assert!(a.call("doc_create", &json!({ "from": "email", "path": "../outside.eml" })).is_err());
+}
+
+#[test]
+fn creating_from_an_html_file_through_tools() {
+    let dir = workdir("create-html");
+    std::fs::write(
+        dir.join("page.html"),
+        "<html><head><title>Minutes</title></head><body><p>First <b>point</b>.</p><img src=\"https://example.com/x.png\" alt=\"Logo\"></body></html>",
+    )
+    .unwrap();
+    let mut a = auto(&dir);
+    let created = ok(&mut a, "doc_create", json!({ "from": "html", "path": "page.html", "width": 595.28, "height": 841.89 }));
+    assert_eq!((created["pages"].as_u64(), created["dirty"].as_bool()), (Some(1), Some(true)), "{created}");
+    let doc = created["doc"].as_u64().unwrap();
+    let text = page_text(&mut a, doc).join("\n");
+    for needle in ["First", "point", "[image: Logo]"] {
+        assert!(text.contains(needle), "{needle:?} in {text:?}");
+    }
+    assert!(matches!(a.call("doc_create", &json!({ "from": "html" })), Err(ToolError::InvalidArgs(_))));
+    assert!(matches!(a.call("doc_create", &json!({ "from": "html", "path": "page.html", "width": 500 })), Err(ToolError::InvalidArgs(_))));
+    assert!(a.call("doc_create", &json!({ "from": "html", "path": "../outside.html" })).is_err());
+}
+
+#[test]
 fn creating_from_text_refuses_what_the_font_cannot_draw() {
     let dir = workdir("create-undrawable");
     std::fs::write(dir.join("kr.txt"), "ABC 제안서 시험").unwrap();

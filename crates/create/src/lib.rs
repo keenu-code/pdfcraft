@@ -1,11 +1,13 @@
-//! pdfcraft-create — create PDFs from nothing, images or text (L4). See the README.
+//! pdfcraft-create — create PDFs from nothing, images, text or email messages (L4). See the README.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream, serialize};
 
+mod email;
 mod extract;
 mod upright_image;
+pub use email::{from_email, from_html};
 pub use extract::{ExtractedImage, ImageExport, extract_images, image_file, image_file_within};
 use pdfcraft_fonts::{literal, win_ansi, wrap};
 
@@ -573,16 +575,20 @@ fn tiff_pages_within(name: &str, bytes: &[u8], wanted: usize, budget: usize) -> 
     Ok(out)
 }
 
-/// What a file picked for Create is, by its bytes (and, for text, its name).
+/// What a file picked for Create is, by its bytes (and, for text and email, its name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Pdf,
     Image,
     Text,
+    /// An email message (`.eml`, RFC 5322 with MIME).
+    Email,
+    /// An HTML file (`.html`, `.htm`).
+    Html,
 }
 
-/// File extensions Create converts to PDF (images and plain text).
-pub const CONVERTIBLE: [&str; 12] = ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "txt", "text"];
+/// File extensions Create converts to PDF (images, plain text, email messages and HTML files).
+pub const CONVERTIBLE: [&str; 15] = ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "txt", "text", "eml", "html", "htm"];
 
 /// A classic TIFF or a BigTIFF (version 43), in either byte order.
 fn is_tiff(bytes: &[u8]) -> bool {
@@ -607,8 +613,9 @@ fn is_image(bytes: &[u8]) -> bool {
             && bytes.get(14..18).and_then(|h| <[u8; 4]>::try_from(h).ok()).is_some_and(|h| matches!(u32::from_le_bytes(h), 12 | 40 | 52 | 56 | 108 | 124)))
 }
 
-/// Whether `bytes` named `name` is a PDF, an image Create can embed, or plain text (a `.txt` or
-/// `.text` file). `None` for anything else.
+/// Whether `bytes` named `name` is a PDF, an image Create can embed, plain text (a `.txt` or
+/// `.text` file), an email message (a `.eml` file) or an HTML file (`.html`, `.htm`). `None` for
+/// anything else.
 pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
     let head = bytes.get(..bytes.len().min(1024)).unwrap_or_default();
     if head.windows(5).any(|w| w == b"%PDF-") {
@@ -618,6 +625,12 @@ pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
         return Some(SourceKind::Image);
     }
     let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".eml") {
+        return Some(SourceKind::Email);
+    }
+    if lower.ends_with(".html") || lower.ends_with(".htm") {
+        return Some(SourceKind::Html);
+    }
     (lower.ends_with(".txt") || lower.ends_with(".text")).then_some(SourceKind::Text)
 }
 
@@ -644,9 +657,25 @@ fn embed(name: &str, bytes: &[u8], wanted: usize) -> Result<Vec<Embedded>, Creat
 /// Embed an image file (its first page, for TIFFs) as an image XObject in `doc`. Returns the
 /// object and the image's natural size in points (from its resolution).
 pub fn image_xobject(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<(ObjRef, (f64, f64)), CreateError> {
+    image_xobject_with_pixels(doc, name, bytes).map(|e| (e.xobject, e.size))
+}
+
+/// An image embedded by [`image_xobject_with_pixels`]: its XObject, its size in pixels (what a
+/// browser or a mail program shows it at, ignoring its resolution) and in points (from its
+/// resolution).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmbeddedImage {
+    pub xobject: ObjRef,
+    pub pixels: (u32, u32),
+    pub size: (f64, f64),
+}
+
+/// [`image_xobject`], also returning the image's size in pixels.
+pub fn image_xobject_with_pixels(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<EmbeddedImage, CreateError> {
     let img = embed(name, bytes, 1)?.into_iter().next().ok_or_else(|| CreateError::Image(name.into(), "the file has no image".into()))?;
-    let size = (img.px.0 as f64 * 72.0 / img.dpi.0, img.px.1 as f64 * 72.0 / img.dpi.1);
-    Ok((add_image(doc, img, &mut Vec::new()), size))
+    let pixels = img.px;
+    let size = (pixels.0 as f64 * 72.0 / img.dpi.0, pixels.1 as f64 * 72.0 / img.dpi.1);
+    Ok(EmbeddedImage { xobject: add_image(doc, img, &mut Vec::new()), pixels, size })
 }
 
 /// Resolution used to size PDF pages. Image pixels are never resampled.
