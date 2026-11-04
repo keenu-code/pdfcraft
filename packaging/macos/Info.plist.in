@@ -108,6 +108,22 @@
       <key>CFBundleTypeMIMETypes</key>
       <array><string>application/pdf</string></array>
     </dict>
+    <!-- Email messages (.eml) open as a new PDF (Create ▸ from an email message), under Open
+         With; Mail or Outlook stays the default. -->
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>Email Message</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array><string>com.apple.mail.email</string></array>
+      <key>CFBundleTypeExtensions</key>
+      <array><string>eml</string></array>
+      <key>CFBundleTypeMIMETypes</key>
+      <array><string>message/rfc822</string></array>
+    </dict>
   </array>
 
 </dict>

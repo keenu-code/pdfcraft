@@ -1,12 +1,14 @@
-//! pdfcraft-create — create PDFs from nothing, images, text or (through LibreOffice) Office documents (L4). See the README.
+//! pdfcraft-create — create PDFs from nothing, images, text, email messages, HTML files or (through LibreOffice) Office documents (L4). See the README.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream, serialize};
 
+mod email;
 mod extract;
 mod text_font;
 mod upright_image;
+pub use email::{from_email, from_html};
 pub use extract::{ExtractedImage, ImageExport, extract_images, image_file, image_file_within};
 mod office;
 #[cfg(not(target_arch = "wasm32"))]
@@ -758,7 +760,7 @@ fn tiff_pages_within(name: &str, bytes: &[u8], wanted: usize, budget: usize) -> 
     Ok(out)
 }
 
-/// What a file picked for Create is, by its bytes (and, for text, its name).
+/// What a file picked for Create is, by its bytes (and, for text and email, its name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceKind {
     Pdf,
@@ -766,6 +768,10 @@ pub enum SourceKind {
     Text,
     /// A Word, Excel, PowerPoint or OpenDocument file, converted through LibreOffice.
     Office,
+    /// An email message (`.eml`, RFC 5322 with MIME).
+    Email,
+    /// An HTML file (`.html`, `.htm`).
+    Html,
 }
 
 /// File extensions of the images Create converts to PDF.
@@ -774,9 +780,17 @@ pub const IMAGE_EXTENSIONS: [&str; 11] = ["png", "jpg", "jpeg", "tif", "tiff", "
 /// File extensions of the plain-text files Create converts to PDF.
 pub const TEXT_EXTENSIONS: [&str; 2] = ["txt", "text"];
 
-/// File extensions Create converts to PDF itself: [`IMAGE_EXTENSIONS`] and [`TEXT_EXTENSIONS`]
+/// File extensions of the email messages Create converts to PDF.
+pub const EMAIL_EXTENSIONS: [&str; 1] = ["eml"];
+
+/// File extensions of the HTML files Create converts to PDF.
+pub const HTML_EXTENSIONS: [&str; 2] = ["html", "htm"];
+
+/// File extensions Create converts to PDF itself: [`IMAGE_EXTENSIONS`], [`TEXT_EXTENSIONS`],
+/// [`EMAIL_EXTENSIONS`] and [`HTML_EXTENSIONS`]
 /// (Office documents go through LibreOffice, [`OFFICE_EXTENSIONS`]).
-pub const CONVERTIBLE: [&str; 13] = ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "pcx", "txt", "text"];
+pub const CONVERTIBLE: [&str; 16] =
+    ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "pcx", "txt", "text", "eml", "html", "htm"];
 
 /// A PCX file: its manufacturer byte, a version (1 was never used), run-length coding and 1 or 8
 /// bits per plane. `pcx` says when the rest of the header isn't one it can read.
@@ -809,7 +823,8 @@ fn is_image(bytes: &[u8]) -> bool {
 }
 
 /// Whether `bytes` named `name` is a PDF, an image Create can embed, plain text (a `.txt` or
-/// `.text` file) or an Office document ([`is_office`]). `None` for anything else.
+/// `.text` file), an email message (a `.eml` file), an HTML file (`.html`, `.htm`) or an Office
+/// document ([`is_office`]). `None` for anything else.
 pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
     let head = bytes.get(..bytes.len().min(1024)).unwrap_or_default();
     if head.windows(5).any(|w| w == b"%PDF-") {
@@ -822,6 +837,12 @@ pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
         return Some(SourceKind::Office);
     }
     let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".eml") {
+        return Some(SourceKind::Email);
+    }
+    if lower.ends_with(".html") || lower.ends_with(".htm") {
+        return Some(SourceKind::Html);
+    }
     (lower.ends_with(".txt") || lower.ends_with(".text")).then_some(SourceKind::Text)
 }
 
@@ -850,9 +871,25 @@ fn embed(name: &str, bytes: &[u8], wanted: usize) -> Result<Vec<Embedded>, Creat
 /// Embed an image file (its first page, for TIFFs) as an image XObject in `doc`. Returns the
 /// object and the image's natural size in points (from its resolution).
 pub fn image_xobject(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<(ObjRef, (f64, f64)), CreateError> {
+    image_xobject_with_pixels(doc, name, bytes).map(|e| (e.xobject, e.size))
+}
+
+/// An image embedded by [`image_xobject_with_pixels`]: its XObject, its size in pixels (what a
+/// browser or a mail program shows it at, ignoring its resolution) and in points (from its
+/// resolution).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmbeddedImage {
+    pub xobject: ObjRef,
+    pub pixels: (u32, u32),
+    pub size: (f64, f64),
+}
+
+/// [`image_xobject`], also returning the image's size in pixels.
+pub fn image_xobject_with_pixels(doc: &mut Document, name: &str, bytes: &[u8]) -> Result<EmbeddedImage, CreateError> {
     let img = embed(name, bytes, 1)?.into_iter().next().ok_or_else(|| CreateError::Image(name.into(), "the file has no image".into()))?;
-    let size = (img.px.0 as f64 * 72.0 / img.dpi.0, img.px.1 as f64 * 72.0 / img.dpi.1);
-    Ok((add_image(doc, img, &mut Vec::new()), size))
+    let pixels = img.px;
+    let size = (pixels.0 as f64 * 72.0 / img.dpi.0, pixels.1 as f64 * 72.0 / img.dpi.1);
+    Ok(EmbeddedImage { xobject: add_image(doc, img, &mut Vec::new()), pixels, size })
 }
 
 /// Resolution used to size PDF pages. Image pixels are never resampled.

@@ -45,6 +45,28 @@ impl Automation {
                 })?;
                 (format!("{title}.pdf"), bytes)
             }
+            kind @ ("email" | "html") => {
+                let p = a.opt_str("path")?.ok_or_else(|| ToolError::InvalidArgs(format!("{kind} needs `path`")))?;
+                let path = self.resolve(p, false)?;
+                let bytes = read_input(&path)?;
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                let page = match (a.opt_num("width")?, a.opt_num("height")?) {
+                    (Some(w), Some(h)) => (w, h),
+                    (None, None) => self.session.paper(),
+                    _ => return Err(ToolError::InvalidArgs(format!("{kind} takes width and height together"))),
+                };
+                let created = if kind == "email" {
+                    self.session.create_from_email_on(&name, &bytes, page)
+                } else {
+                    self.session.create_from_html_on(&name, &bytes, page)
+                };
+                let bytes = created.map_err(|e| match e {
+                    pdfcraft_engine::EditError::Create(pdfcraft_engine::CreateError::Invalid(m)) => ToolError::InvalidArgs(m),
+                    e => failed(e),
+                })?;
+                (format!("{stem}.pdf"), bytes)
+            }
             other => return Err(ToolError::InvalidArgs(format!("unknown source {other:?}"))),
         };
         let name = a.opt_str("name")?.map(str::to_owned).unwrap_or(name);

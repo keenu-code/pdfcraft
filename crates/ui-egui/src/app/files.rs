@@ -1026,6 +1026,8 @@ impl PdfCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         filters.push((tl!("Office documents").to_string(), pdfcraft_engine::OFFICE_EXTENSIONS.to_vec()));
         filters.push((tl!("Text").to_string(), pdfcraft_engine::TEXT_EXTENSIONS.to_vec()));
+        filters.push((tl!("Email messages").to_string(), pdfcraft_engine::EMAIL_EXTENSIONS.to_vec()));
+        filters.push((tl!("HTML files").to_string(), pdfcraft_engine::HTML_EXTENSIONS.to_vec()));
         #[cfg(not(any(target_arch = "wasm32", target_os = "macos")))]
         filters.push((tl!("All files").to_string(), vec!["*"]));
         filters

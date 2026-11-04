@@ -25,6 +25,21 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
 - `from_text_escaped(text, …)`: the same for reports PdfCraft generates from documents
   (comment summaries, compare reports): text Inter draws is set in it; otherwise the characters
   Helvetica can't draw are written as `[U+XXXX]` and the first line says so (`ESCAPED_NOTE`).
+- `from_email(name, bytes, …)`: an email message (`.eml`, RFC 5322 with MIME) as a header block
+  (From, Sent, To, Cc, Subject, Attachments; labels in bold), the body (the HTML version when
+  there is one, set as paragraphs with bold, italic, links, bullets and quoted replies through
+  `html2text`'s annotated lines; else the plain text), the pictures the HTML embeds by Content-ID
+  (at the size the HTML asks for in CSS pixels, else their pixel size, and at most the column wide), and every other attachment embedded in the PDF as a
+  document-level file attachment (`/Names /EmbeddedFiles`, with its type, size and the message's
+  date). Nothing is fetched: a picture on the web is its alternative text. Characters Helvetica
+  can't draw are written as `[U+XXXX]` with a note, never refused. Three-quarter-inch margins, as
+  a printed email has (the engine sets it in 10 pt on the session's paper). Bytes without a single
+  header are refused.
+- `from_html(name, bytes, …)`: an HTML file on the same pipeline: its text as paragraphs, the
+  pictures it carries inline as `data:` URIs at the size it asks for, the `<title>` as the title.
+  Nothing is fetched or read from disk. The encoding is the byte order mark, else the `<meta charset>`
+  in the first kilobyte, else `decode_text`'s guess. 11 pt with one-inch margins; an empty file is
+  refused.
 
 Every function returns a `pdfcraft_cos::Document`; the caller writes it.
 

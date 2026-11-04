@@ -1,6 +1,6 @@
 [package]
 name = "pdfcraft-create"
-description = "Create PDFs: blank documents, from images (PNG, JPEG) and from plain text"
+description = "Create PDFs: blank documents, from images (PNG, JPEG), from plain text and from email messages"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -23,6 +23,12 @@ zune-jpeg = "0.5"
 thiserror = { workspace = true }
 # Already in the graph through lopdf; used only to read plain-text files (decode_text).
 encoding_rs = "0.8"
+# Email messages (.eml): the MIME tree, headers, transfer and charset decoding. No features.
+mail-parser = { version = "1.0", default-features = false, features = ["full_encoding"] }
+# An email's HTML body, and HTML files, as annotated lines (bold, italic, links, pictures); no CSS features.
+html2text = { version = "0.17", default-features = false }
+# Pictures an HTML file carries inline (`data:` URIs).
+base64 = "0.23"
 
 [target.'cfg(unix)'.dependencies]
 # Already in the graph (pdfcraft-platform, ui-egui); stops a timed-out LibreOffice's whole process

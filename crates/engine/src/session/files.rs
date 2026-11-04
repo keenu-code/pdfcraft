@@ -40,6 +40,45 @@ impl Session {
         self.write_new(&pdfcraft_create::from_text(title, text, pdfcraft_create::LETTER, 11.0)?)
     }
 
+    /// The paper new documents made from other files are set on (see [`Session::set_paper`]):
+    /// US Letter until the app says otherwise.
+    pub fn paper(&self) -> (f64, f64) {
+        self.paper.unwrap_or(pdfcraft_create::LETTER)
+    }
+
+    /// Set the paper for [`Session::create_from_email`]: the app passes the system region's
+    /// (A4 outside the Letter regions). Sides outside 3 to 14 400 points are ignored.
+    pub fn set_paper(&mut self, (w, h): (f64, f64)) {
+        if w.is_finite() && h.is_finite() && (3.0..=14_400.0).contains(&w) && (3.0..=14_400.0).contains(&h) {
+            self.paper = Some((w, h));
+        }
+    }
+
+    /// A new document from an email message (`.eml`) on the session's paper
+    /// ([`Session::paper`]), in 10 pt Helvetica: the headers, the body, the pictures it embeds,
+    /// and its attachments embedded in the PDF. Characters Helvetica can't draw are written as
+    /// `[U+XXXX]`, never refused: a message is evidence.
+    pub fn create_from_email(&self, name: &str, bytes: &[u8]) -> Result<Arc<Vec<u8>>, EditError> {
+        self.create_from_email_on(name, bytes, self.paper())
+    }
+
+    /// [`Session::create_from_email`] on pages of `page` points.
+    pub fn create_from_email_on(&self, name: &str, bytes: &[u8], page: (f64, f64)) -> Result<Arc<Vec<u8>>, EditError> {
+        self.write_new(&pdfcraft_create::from_email(name, bytes, page, 10.0)?)
+    }
+
+    /// A new document from an HTML file on the session's paper ([`Session::paper`]), in 11 pt
+    /// Helvetica with one-inch margins: the text as paragraphs, and the pictures the file carries
+    /// inline. Nothing is fetched or read from disk.
+    pub fn create_from_html(&self, name: &str, bytes: &[u8]) -> Result<Arc<Vec<u8>>, EditError> {
+        self.create_from_html_on(name, bytes, self.paper())
+    }
+
+    /// [`Session::create_from_html`] on pages of `page` points.
+    pub fn create_from_html_on(&self, name: &str, bytes: &[u8], page: (f64, f64)) -> Result<Arc<Vec<u8>>, EditError> {
+        self.write_new(&pdfcraft_create::from_html(name, bytes, page, 11.0)?)
+    }
+
     /// [`Self::create_from_text`] for a report PdfCraft writes from documents (comment summaries,
     /// compare reports), which can quote any language: when the bundled Inter face can't draw it
     /// all, characters Helvetica can't draw are written as `[U+XXXX]`, and the report's first line
@@ -49,7 +88,8 @@ impl Session {
         self.write_new(&doc)
     }
 
-    /// Convert a file Create understands (an image, plain text or an Office document) to PDF
+    /// Convert a file Create understands (an image, plain text, an email message, an HTML
+    /// file or an Office document) to PDF
     /// bytes; a PDF is checked (it must open and allow copying pages) and returned as it is.
     /// An Office document runs LibreOffice ([`office_to_pdf`]), which takes seconds: keep it off
     /// the frame thread ([`Self::convert_to_pdf_inline`] there).
@@ -67,7 +107,7 @@ impl Session {
     fn convert(&self, name: &str, bytes: &Arc<Vec<u8>>, office: Office) -> Result<(SourceKind, Arc<Vec<u8>>), EditError> {
         let Some(kind) = source_kind(name, bytes) else {
             return Err(EditError::Source(format!(
-                "{name}: this file type can't be converted; use a PDF, an image, a .txt file or a Word, Excel or PowerPoint file"
+                "{name}: this file type can't be converted; use a PDF, an image, a .txt, .eml or .html file, or a Word, Excel or PowerPoint file"
             )));
         };
         if kind == SourceKind::Office && office == Office::Refuse {
@@ -81,6 +121,8 @@ impl Session {
             SourceKind::Pdf => open_source(name, bytes).map(|_| bytes.clone()),
             SourceKind::Image => self.create_from_images(&[(name.to_string(), bytes.to_vec())]),
             SourceKind::Text => self.create_from_text(title, &decode_text(bytes)),
+            SourceKind::Email => self.create_from_email(name, bytes),
+            SourceKind::Html => self.create_from_html(name, bytes),
             SourceKind::Office => office_to_pdf(name, bytes),
         })
         .map_err(|_| EditError::Source(format!("{name}: the file could not be read")))?;
@@ -135,7 +177,7 @@ impl Session {
     fn as_pdf_with(&self, name: &str, bytes: &Arc<Vec<u8>>, office: Office) -> Result<Arc<Vec<u8>>, EditError> {
         let pdf = match source_kind(name, bytes) {
             Some(SourceKind::Pdf) => true,
-            Some(SourceKind::Image | SourceKind::Text | SourceKind::Office) => false,
+            Some(SourceKind::Image | SourceKind::Text | SourceKind::Email | SourceKind::Html | SourceKind::Office) => false,
             None => name.to_ascii_lowercase().ends_with(".pdf"),
         };
         if pdf { Ok(bytes.clone()) } else { self.convert(name, bytes, office).map(|(_, pdf)| pdf) }

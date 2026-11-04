@@ -1630,11 +1630,11 @@ pub fn tools() -> Vec<ToolDef> {
         t(
             "doc_create",
             "Create a PDF",
-            "Create a new, unsaved document and return it like doc_open: `blank` (pages, width, height in points; default 1 US Letter page), `images` (paths of PNG, JPEG, TIFF (every page), GIF or BMP files, one page each at the image's resolution) or `text` (a .txt path, or `text` directly; set in Helvetica, or in the bundled Inter face when it has Latin, Greek or Cyrillic letters outside Western European (WinAnsi); other characters are refused). Save it with doc_save and a path.",
+            "Create a new, unsaved document and return it like doc_open: `blank` (pages, width, height in points; default 1 US Letter page), `images` (paths of PNG, JPEG, TIFF (every page), GIF or BMP files, one page each at the image's resolution), `text` (a .txt path, or `text` directly; set in Helvetica, or in the bundled Inter face when it has Latin, Greek or Cyrillic letters outside Western European (WinAnsi); other characters are refused), `email` (a .eml path: the headers, the body with its pictures, and the attachments embedded in the PDF as file attachments, in 10 pt Helvetica on US Letter unless width and height say otherwise; characters Helvetica can't draw are written as [U+XXXX]) or `html` (an .html path: its text as paragraphs in 11 pt Helvetica and the pictures it carries inline as data: URIs; nothing is fetched or read from disk; width and height as for email). Save it with doc_save and a path.",
         )
         .with(schema(
             json!({
-                "from": { "type": "string", "enum": ["blank", "images", "text"] },
+                "from": { "type": "string", "enum": ["blank", "images", "text", "email", "html"] },
                 "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                 "dpi": { "type": "number", "minimum": 1, "maximum": 1200, "description": "For images: override the embedded resolution without resampling. 72 gives one point per pixel; omit to use each image's resolution (72 when absent)." },
                 "text": { "type": "string" },

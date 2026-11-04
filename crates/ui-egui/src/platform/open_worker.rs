@@ -219,7 +219,7 @@ fn prepare(job: Job) -> ResultKind {
         Input::Bytes(bytes) => bytes.clone(),
     };
     match pdfcraft_engine::source_kind(&job.name, &bytes) {
-        Some(SourceKind::Image | SourceKind::Text) => return ResultKind::Conversion(bytes),
+        Some(SourceKind::Image | SourceKind::Text | SourceKind::Email | SourceKind::Html) => return ResultKind::Conversion(bytes),
         // LibreOffice takes seconds: it runs here, and the frame thread only opens the result.
         Some(SourceKind::Office) => return ResultKind::Converted(pdfcraft_engine::office_to_pdf(&job.name, &bytes).map_err(|e| e.to_string())),
         Some(SourceKind::Pdf) | None => {}
