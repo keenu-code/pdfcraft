@@ -64,8 +64,12 @@ impl PdfCraftApp {
 
     /// Construct an application with the default session, panels, theme and control state.
     pub fn new() -> Self {
+        // The system region's paper: new blank pages, and what an opened email message is set on.
+        let paper = crate::paper::Paper::system();
+        let mut session = Session::new();
+        session.set_paper(paper.points());
         Self {
-            session: Session::new(),
+            session,
             views: Vec::new(),
             closed_tabs: Vec::new(),
             active: None,
@@ -73,7 +77,7 @@ impl PdfCraftApp {
             default_mode: Mode::AllTools,
             view_defaults: Default::default(),
             units: Default::default(),
-            blank_paper: crate::paper::Paper::system(),
+            blank_paper: paper,
             date_format_draft: None,
             mode_override: None,
             left: LeftPanel::AllTools,

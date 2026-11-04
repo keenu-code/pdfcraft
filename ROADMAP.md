@@ -1,5 +1,7 @@
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-11-04 | **Last updated:** 2026-11-04 | **Change:** minor (M10: Create PDF from an email message (.eml): headers, HTML or text body, embedded pictures, attachments embedded in the PDF; and from an HTML file on the same pipeline (#3199, #5353, #6064); by every open route and `doc_create from: email | html`; estimates unchanged)
+
 > **Last reviewed:** 2026-11-03 | **Last updated:** 2026-11-03 | **Change:** patch (M5 #5850 review: indirect typewriter intent and composer edits preserve outer whitespace; movement regression commits by outside click; estimates unchanged)
 
 > **Last reviewed:** 2026-11-03 | **Last updated:** 2026-11-03 | **Change:** patch (M5 #5850: Enter adds Fill & Sign line breaks; outside clicks commit, Escape cancels, and saved multiline appearances retain their text and height; estimates unchanged)

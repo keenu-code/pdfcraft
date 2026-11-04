@@ -10268,3 +10268,50 @@ fn fill_sign_multiline_text_survives_engine_save_reopen_and_render() {
     assert_eq!(reopened.get(again).unwrap().info.annotations[0].contents.as_deref(), Some(text), "reopening preserves all blank lines");
     assert_eq!(before.rgba, render_page(&reopened, again).rgba, "the saved appearance is identical");
 }
+
+#[test]
+fn email_messages_convert_to_a_pdf_of_their_headers_and_body() {
+    let mut s = Session::new();
+    let eml = b"From: Ada <ada@example.org>\r\nTo: bob@example.org\r\nSubject: Minutes\r\nDate: Mon, 2 Nov 2026 10:00:00 +0000\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nFirst point.\r\n> quoted\r\n";
+    let (kind, pdf) = s.convert_to_pdf("minutes.eml", &Arc::new(eml.to_vec())).unwrap();
+    assert_eq!(kind, SourceKind::Email);
+    let id = s.open_new("minutes.pdf", pdf).unwrap();
+    let text = page_texts(&s, id).join("\n");
+    for needle in ["From:", "Ada <ada@example.org>", "Subject:", "Minutes", "First point.", "quoted"] {
+        assert!(text.contains(needle), "{needle:?} in {text:?}");
+    }
+    assert_eq!(s.get(id).unwrap().info.title.as_deref(), Some("Minutes"));
+    // The app sets the region's paper; an invalid one is ignored; headless stays Letter.
+    let page = |s: &Session, id: DocId| {
+        let p = s.get(id).unwrap().info.pages[0].clone();
+        (p.width, p.height)
+    };
+    assert_eq!(page(&s, id), (612.0, 792.0));
+    s.set_paper((595.28, 841.89));
+    s.set_paper((1.0, 1.0));
+    assert_eq!(s.paper(), (595.28, 841.89));
+    let (_, pdf) = s.convert_to_pdf("minutes.eml", &Arc::new(eml.to_vec())).unwrap();
+    let a4 = s.open_new("a4.pdf", pdf).unwrap();
+    let (w, h) = page(&s, a4);
+    assert!((w - 595.28).abs() < 0.01 && (h - 841.89).abs() < 0.01, "{w} x {h}");
+    // Bytes with no header at all are not a message; a PDF named .eml is still a PDF.
+    assert!(matches!(s.convert_to_pdf("junk.eml", &Arc::new(b"no headers here".to_vec())), Err(EditError::Create(_))));
+    assert_eq!(s.convert_to_pdf("a.eml", &Arc::new(fixture(1))).unwrap().0, SourceKind::Pdf);
+}
+
+#[test]
+fn html_files_convert_to_a_pdf_of_their_text() {
+    let mut s = Session::new();
+    let html = b"<html><head><title>Site notes</title></head><body><h1>Notes</h1><p>First <b>point</b>.</p></body></html>";
+    let (kind, pdf) = s.convert_to_pdf("notes.html", &Arc::new(html.to_vec())).unwrap();
+    assert_eq!(kind, SourceKind::Html);
+    let id = s.open_new("notes.pdf", pdf).unwrap();
+    let text = page_texts(&s, id).join("\n");
+    for needle in ["Notes", "First", "point"] {
+        assert!(text.contains(needle), "{needle:?} in {text:?}");
+    }
+    assert_eq!(s.get(id).unwrap().info.title.as_deref(), Some("Site notes"));
+    // The kind is by name, so an empty or blank file is refused by the converter, not unknown.
+    assert!(matches!(s.convert_to_pdf("empty.htm", &Arc::new(Vec::new())), Err(EditError::Create(_))));
+    assert!(matches!(s.convert_to_pdf("blank.htm", &Arc::new(b"   ".to_vec())), Err(EditError::Create(_))));
+}

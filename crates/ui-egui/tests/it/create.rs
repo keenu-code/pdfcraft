@@ -58,16 +58,27 @@ fn opening_images_and_text_converts_them_to_new_pdfs() {
     app.set_option("language", "en").unwrap();
     app.open_bytes("photo.png", Some("/tmp/photo.png".into()), png()).unwrap();
     app.open_bytes("notes.txt", None, b"first line\nsecond line".to_vec()).unwrap();
+    app.open_bytes("note.eml", None, b"From: ada@example.org\r\nSubject: Note\r\n\r\nhello".to_vec()).unwrap();
+    app.open_bytes("page.html", None, b"<p>hello</p>".to_vec()).unwrap();
     app.create_from_images(vec![("a.png".into(), png()), ("b.png".into(), png())]);
     assert!(app.execute("create.blank"));
     let docs = app.session.docs();
     let summary: Vec<(String, usize, bool)> = docs.iter().map(|d| (d.name.clone(), d.info.pages.len(), d.dirty)).collect();
     assert_eq!(
         summary,
-        [("photo.pdf".to_string(), 1, true), ("notes.pdf".into(), 1, true), ("Images.pdf".into(), 2, true), ("Untitled.pdf".into(), 1, true)]
+        [
+            ("photo.pdf".to_string(), 1, true),
+            ("notes.pdf".into(), 1, true),
+            ("note.pdf".into(), 1, true),
+            ("page.pdf".into(), 1, true),
+            ("Images.pdf".into(), 2, true),
+            ("Untitled.pdf".into(), 1, true)
+        ]
     );
     assert!(docs[0].path.is_none(), "a converted file has no PDF path yet: Save asks where");
     assert!(app.open_bytes("junk.png", None, b"\x89PNG\r\n\x1a\nnot really".to_vec()).is_err());
+    assert!(app.open_bytes("junk.eml", None, b"not a message".to_vec()).is_err());
+    assert!(app.open_bytes("empty.html", None, Vec::new()).is_err());
 }
 
 struct ReduceDir(std::path::PathBuf);
