@@ -257,6 +257,7 @@ impl PdfCraftApp {
             "create.file" => self.open_dialog(),
             "create.multiple" => self.create_multiple_dialog(),
             "create.multiple_separate" => self.create_multiple_separate_dialog(),
+            "create.emails" => self.export_emails_dialog(),
             "create.images" => self.create_from_images_dialog(),
             "create.clipboard" => self.create_from_clipboard(),
             "optimize.reduce" => self.reduce_file_size(),

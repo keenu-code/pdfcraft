@@ -812,6 +812,8 @@ pub struct PdfCraftApp {
     pub export_draft: export_ui::ExportDraft,
     /// A running export's progress.
     export_status: Option<export_ui::ExportStatus>,
+    /// Export emails to PDF: the running export's progress and, once done, its summary.
+    email_export_status: Option<workflows::email_export_ui::EmailExportStatus>,
     /// The saved Fill & Sign signature and initials (drawn or typed).
     pub signature: Option<fill_sign::SavedSig>,
     pub initials: Option<fill_sign::SavedSig>,

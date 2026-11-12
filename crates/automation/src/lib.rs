@@ -55,6 +55,7 @@ mod assemble;
 mod bookmark_io;
 mod dispatch;
 mod documents;
+mod emails;
 mod error;
 mod json;
 mod pages;

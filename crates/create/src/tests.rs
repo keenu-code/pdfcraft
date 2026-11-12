@@ -3834,3 +3834,232 @@ fn html_pictures_that_do_not_fit_the_page_start_the_next() {
     assert!(second.starts_with("q 19.44 0 0 388.80 72.00 329.00 cm /Im1 Do Q\n"), "{second}");
     assert!(second.contains("BT 1 0 0 1 72.00 302.16 Tm\n/F1 11.00 Tf (After.) Tj"), "{second}");
 }
+
+// ── Outlook messages (.msg) ─────────────────────────────────────────────────────────────────
+
+/// A MAPI property stream: `header` bytes (32 for a message, 24 for an attached message, 8
+/// otherwise), then 16-byte entries of (tag, flags, value).
+fn msg_props(header: usize, props: &[(u32, u64)]) -> Vec<u8> {
+    let mut out = vec![0u8; header];
+    for (tag, value) in props {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&6u32.to_le_bytes());
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+fn utf16le(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).chain([0, 0]).collect()
+}
+
+/// Unix seconds as a Windows FILETIME.
+fn filetime(secs: i64) -> u64 {
+    u64::try_from(secs + 11_644_473_600).unwrap() * 10_000_000
+}
+
+/// An Outlook message to build in a compound file.
+#[derive(Default)]
+struct MsgSpec {
+    subject: Option<String>,
+    sender: Option<(String, String)>,
+    /// (name, address, type: 1 To, 2 Cc, 3 Bcc)
+    recipients: Vec<(String, String, u64)>,
+    sent: Option<i64>,
+    text: Option<String>,
+    html: Option<Vec<u8>>,
+    cpid: Option<u64>,
+    transport_headers: Option<String>,
+    /// (name, bytes, mime, content id)
+    attachments: Vec<(String, Vec<u8>, String, Option<String>)>,
+    embedded: Vec<(String, MsgSpec)>,
+}
+
+fn write_msg(cf: &mut cfb::CompoundFile<std::io::Cursor<Vec<u8>>>, dir: &str, header: usize, m: &MsgSpec) {
+    use std::io::Write;
+    let put = |cf: &mut cfb::CompoundFile<std::io::Cursor<Vec<u8>>>, path: String, bytes: &[u8]| {
+        cf.create_stream(&path).unwrap().write_all(bytes).unwrap();
+    };
+    let mut props = Vec::new();
+    if let Some(t) = m.sent {
+        props.push((0x0039_0040, filetime(t)));
+    }
+    if let Some(c) = m.cpid {
+        props.push((0x3FDE_0003, c));
+    }
+    put(cf, format!("{dir}__properties_version1.0"), &msg_props(header, &props));
+    if let Some(s) = &m.subject {
+        put(cf, format!("{dir}__substg1.0_0037001F"), &utf16le(s));
+    }
+    if let Some((name, address)) = &m.sender {
+        put(cf, format!("{dir}__substg1.0_0C1A001F"), &utf16le(name));
+        put(cf, format!("{dir}__substg1.0_5D01001F"), &utf16le(address));
+    }
+    if let Some(t) = &m.text {
+        put(cf, format!("{dir}__substg1.0_1000001F"), &utf16le(t));
+    }
+    if let Some(h) = &m.html {
+        put(cf, format!("{dir}__substg1.0_10130102"), h);
+    }
+    if let Some(h) = &m.transport_headers {
+        put(cf, format!("{dir}__substg1.0_007D001F"), &utf16le(h));
+    }
+    for (i, (name, address, kind)) in m.recipients.iter().enumerate() {
+        let r = format!("{dir}__recip_version1.0_#{i:08X}");
+        cf.create_storage(&r).unwrap();
+        put(cf, format!("{r}/__properties_version1.0"), &msg_props(8, &[(0x0C15_0003, *kind)]));
+        put(cf, format!("{r}/__substg1.0_3001001F"), &utf16le(name));
+        put(cf, format!("{r}/__substg1.0_39FE001F"), &utf16le(address));
+    }
+    let mut n = 0;
+    for (name, bytes, mime, cid) in &m.attachments {
+        let a = format!("{dir}__attach_version1.0_#{n:08X}");
+        n += 1;
+        cf.create_storage(&a).unwrap();
+        put(cf, format!("{a}/__properties_version1.0"), &msg_props(8, &[(0x3705_0003, 1)]));
+        put(cf, format!("{a}/__substg1.0_3707001F"), &utf16le(name));
+        put(cf, format!("{a}/__substg1.0_37010102"), bytes);
+        put(cf, format!("{a}/__substg1.0_370E001F"), &utf16le(mime));
+        if let Some(cid) = cid {
+            put(cf, format!("{a}/__substg1.0_3712001F"), &utf16le(cid));
+        }
+    }
+    for (name, inner) in &m.embedded {
+        let a = format!("{dir}__attach_version1.0_#{n:08X}");
+        n += 1;
+        cf.create_storage(&a).unwrap();
+        put(cf, format!("{a}/__properties_version1.0"), &msg_props(8, &[(0x3705_0003, 5)]));
+        put(cf, format!("{a}/__substg1.0_3707001F"), &utf16le(name));
+        let e = format!("{a}/__substg1.0_3701000D");
+        cf.create_storage(&e).unwrap();
+        write_msg(cf, &format!("{e}/"), 24, inner);
+    }
+}
+
+fn msg_bytes(m: &MsgSpec) -> Vec<u8> {
+    let mut cf = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+    write_msg(&mut cf, "/", 32, m);
+    cf.flush().unwrap();
+    cf.into_inner().into_inner()
+}
+
+fn sample_msg() -> MsgSpec {
+    MsgSpec {
+        subject: Some("RE: Quarterly figures – résumé".into()),
+        sender: Some(("Ada Lovelace".into(), "ada@example.com.au".into())),
+        recipients: vec![
+            ("Grace Hopper".into(), "grace@example.com.au".into(), 1),
+            ("Tom".into(), "tom@example.com.au".into(), 2),
+            ("Secret".into(), "secret@example.com.au".into(), 3),
+        ],
+        sent: Some(1_793_661_240), // 2026-11-02 23:14:00 UTC
+        text: Some("Hi Grace, the logs are attached.".into()),
+        html: Some(b"<p>Hi Grace,</p><p>The <b>logs</b> are attached.</p><img src=\"cid:pic@x\" alt=\"chart\">".to_vec()),
+        cpid: Some(65001),
+        attachments: vec![
+            ("logs.pdf".into(), LOGS_PDF.to_vec(), "application/pdf".into(), None),
+            ("chart.png".into(), png_bytes(false), "image/png".into(), Some("pic@x".into())),
+        ],
+        embedded: vec![(
+            "Earlier".into(),
+            MsgSpec { subject: Some("Earlier".into()), text: Some("The earlier message.".into()), ..Default::default() },
+        )],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_outlook_message_reads_as_the_same_email() {
+    let eml = msg_to_eml("q.msg", &msg_bytes(&sample_msg())).unwrap();
+    assert!(eml.is_ascii(), "everything is encoded");
+    let m = mail_parser::MessageParser::default().parse(eml.as_slice()).unwrap();
+    assert_eq!(m.subject(), Some("RE: Quarterly figures – résumé"));
+    let from = m.from().unwrap().first().unwrap();
+    assert_eq!((from.name(), from.address()), (Some("Ada Lovelace"), Some("ada@example.com.au")));
+    assert_eq!(m.to().unwrap().first().unwrap().address(), Some("grace@example.com.au"));
+    assert_eq!(m.cc().unwrap().first().unwrap().address(), Some("tom@example.com.au"));
+    assert!(m.bcc().is_none() && !String::from_utf8_lossy(&eml).contains("secret@"), "Bcc is left out");
+    assert_eq!(m.date().unwrap().to_timestamp(), 1_793_661_240);
+    assert!(m.body_html(0).unwrap().contains("<b>logs</b>"));
+    assert_eq!(m.body_text(0).unwrap().trim(), "Hi Grace, the logs are attached.");
+    let names: Vec<_> = m.attachments().map(|a| a.attachment_name().unwrap_or("").to_string()).collect();
+    assert_eq!(names, ["logs.pdf", "chart.png", "Earlier.eml"]);
+    let chart = m.attachments().nth(1).unwrap();
+    assert_eq!(chart.content_id(), Some("pic@x"));
+    assert_eq!(chart.decoded().as_ref(), png_bytes(false).as_slice());
+    assert!(m.messages().any(|inner| inner.subject() == Some("Earlier")), "the attached message is a message");
+}
+
+#[test]
+fn an_outlook_message_becomes_a_pdf_by_every_route() {
+    let bytes = msg_bytes(&sample_msg());
+    assert_eq!(source_kind("Q.MSG", &bytes), Some(SourceKind::Email));
+    assert!(CONVERTIBLE.contains(&"msg") && EMAIL_EXTENSIONS.contains(&"msg"));
+    let (doc, facts) = email_with_facts("q.msg", &bytes, LETTER, 10.0).unwrap();
+    let doc = reopen(&doc);
+    let c = content_bytes(&doc, &pages(&doc)[0]);
+    assert!(shows(&c, "Ada Lovelace <ada@example.com.au>"), "{}", String::from_utf8_lossy(&c));
+    assert!(String::from_utf8_lossy(&c).matches(" Do ").count() == 1, "the cid picture is drawn");
+    assert_eq!(facts.sent, Some(1_793_661_240));
+    assert_eq!(facts.subject.as_deref(), Some("RE: Quarterly figures – résumé"));
+    let names: Vec<_> = facts.attachments.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["logs.pdf", "Earlier.eml"], "the drawn picture is not an attachment");
+    assert_eq!(facts.attachments[0].1, LOGS_PDF);
+}
+
+/// A subject, name or attachment name carrying line breaks can't add a header, and a hostile
+/// display name can't break out of its phrase.
+#[test]
+fn outlook_message_fields_cannot_forge_headers() {
+    let m = MsgSpec {
+        subject: Some("Hi\r\nBcc: victim@example.com\r\n\r\nInjected body".into()),
+        sender: Some(("Eve\r\nTo: x@y".into(), "eve@example.com>\r\nX-Evil: 1".into())),
+        attachments: vec![("a\r\nContent-Type: text/html\".pdf".into(), b"x".to_vec(), "text/plain\r\nX: y".into(), Some("c\r\nX: 1".into()))],
+        ..Default::default()
+    };
+    let eml = msg_to_eml("e.msg", &msg_bytes(&m)).unwrap();
+    let text = String::from_utf8_lossy(&eml);
+    assert!(!text.contains("\r\nBcc:") && !text.contains("\r\nX-Evil") && !text.contains("\r\nX: ") && !text.contains("\r\nTo: x@y"), "{text}");
+    let parsed = mail_parser::MessageParser::default().parse(eml.as_slice()).unwrap();
+    assert_eq!(parsed.subject(), Some("Hi Bcc: victim@example.com Injected body"));
+    assert!(parsed.bcc().is_none());
+    assert_eq!(parsed.attachments().count(), 1);
+    assert_eq!(parsed.attachments().next().unwrap().content_type().map(|c| c.ctype()), Some("application"), "a bad type is octet-stream");
+}
+
+#[test]
+fn outlook_message_edge_cases() {
+    // Nothing but a property stream: an empty message, still a PDF.
+    let empty = msg_bytes(&MsgSpec::default());
+    assert!(from_email("e.msg", &empty, LETTER, 10.0).is_ok());
+    // An OLE file without a message's properties (a Word 97 document named .msg) is not one.
+    let mut cf = cfb::CompoundFile::create(std::io::Cursor::new(Vec::new())).unwrap();
+    std::io::Write::write_all(&mut cf.create_stream("/WordDocument").unwrap(), b"x").unwrap();
+    cf.flush().unwrap();
+    let word = cf.into_inner().into_inner();
+    assert!(!is_msg(&word));
+    assert_eq!(source_kind("doc.msg", &word), None);
+    assert!(msg_to_eml("doc.msg", &word).is_err());
+    assert!(msg_to_eml("x.msg", b"not ole").is_err());
+    assert!(msg_to_eml("x.msg", &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0]).is_err(), "a truncated compound file");
+    // Attached messages nested past the limit are left out with a note, not followed.
+    let mut deep = MsgSpec { subject: Some("level 12".into()), ..Default::default() };
+    for level in (0..12).rev() {
+        deep = MsgSpec { subject: Some(format!("level {level}")), embedded: vec![("inner".into(), deep)], ..Default::default() };
+    }
+    let eml = msg_to_eml("deep.msg", &msg_bytes(&deep)).unwrap();
+    assert!(String::from_utf8_lossy(&eml).contains("=_pdfcraft_msg_7"));
+    assert!(!String::from_utf8_lossy(&eml).contains("=_pdfcraft_msg_8"));
+    // The Date the message travelled with keeps its time zone.
+    let travelled = MsgSpec {
+        sent: Some(1_793_661_240),
+        transport_headers: Some("Received: by x\r\nDate: Tue, 3 Nov 2026 09:14:00\r\n +1000\r\nSubject: s\r\n".into()),
+        ..Default::default()
+    };
+    let eml = msg_to_eml("t.msg", &msg_bytes(&travelled)).unwrap();
+    assert!(String::from_utf8_lossy(&eml).contains("Date: Tue, 3 Nov 2026 09:14:00 +1000\r\n"), "{}", String::from_utf8_lossy(&eml));
+    // An HTML body in a Windows code page is decoded from it.
+    let latin = MsgSpec { html: Some(b"<p>caf\xE9</p>".to_vec()), cpid: Some(1252), ..Default::default() };
+    let eml = msg_to_eml("l.msg", &msg_bytes(&latin)).unwrap();
+    assert!(mail_parser::MessageParser::default().parse(eml.as_slice()).unwrap().body_html(0).unwrap().contains("café"));
+}

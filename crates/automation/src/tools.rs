@@ -154,6 +154,12 @@ pub fn tools() -> Vec<ToolDef> {
                 "dpi": {"type":"number","minimum":72,"maximum":600},
                 "language": {"type":"string"}, "skip_text_pages": {"type":"boolean"}
             }), &["paths","out_dir","steps"])),
+        t("email_export", "Export emails to PDF", "Export email messages (.eml, and Outlook .msg) into out_dir (made if missing): each message as a PDF (headers, body, pictures; attachments also embedded) and each attachment as its own file. A PDF attachment is kept; pictures, text, HTML and attached emails become PDFs; Word, Excel and PowerPoint become PDFs with LibreOffice if it is installed (Word files otherwise through macOS's own reader on a Mac); anything else, or a failed conversion, is written as the original file. Every file of a message is named YYYY-MM-DD HHMM (sent, on this computer's clock) Subject - N part: N 0 is the message (\"0 Email.pdf\"), then its attachments in order (\"1 logs.pdf\"), so sorting by name gives sending order with each message's attachments right after it. Existing files are never replaced: a message whose name is taken is numbered as a group, Subject (2) - 0 Email.pdf... paths are files or folders; folders are searched with their subfolders (16 levels, links not followed) for .eml and .msg. Returns emails exported, written (paths), originals (attachments kept as originals because a conversion failed, with why) and failed (messages or files not written, with why). Sources are unchanged.")
+            .cmd("create.emails")
+            .with(schema(json!({
+                "paths": {"type":"array","items":{"type":"string"},"minItems":1,"maxItems":1000},
+                "out_dir": {"type":"string"}
+            }), &["paths","out_dir"])),
         t("doc_fix_hairlines", "Fix hairlines", "Print production: strokes narrower than narrower_than points on the page (after every transformation; zero-width lines always) are given width points, in page content and form XObjects; Type 3 glyphs and tiling patterns only when asked, changed in place wherever they are used. Both widths at most 10. Returns fixed (strokes), pages, and elsewhere (glyphs and patterns changed that something outside pages also uses); nothing to fix gives 0 and no edit.")
             .cmd("prepress.hairlines")
             .with(schema(

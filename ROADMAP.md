@@ -5,6 +5,8 @@
 - 2026-11-04 (M6, PR #5699 reset estimate): Charge expanded-name scans and field-name copy/comparison bytes; add three negative regressions and byte-exact refusal checks.
 # PdfCraft roadmap
 
+> **Last reviewed:** 2026-11-12 | **Last updated:** 2026-11-12 | **Change:** minor (M10: Outlook `.msg` messages open like `.eml`; Create a PDF ▸ Export emails to PDF… exports a folder of `.eml` and `.msg` to one PDF per message with each attachment its own file, named by sent time with a part number so name order is sending order, on a background thread; `email_export` tool; estimates unchanged)
+
 > **Last reviewed:** 2026-11-04 | **Last updated:** 2026-11-04 | **Change:** minor (M10: Create PDF from an email message (.eml): headers, HTML or text body, embedded pictures, attachments embedded in the PDF; and from an HTML file on the same pipeline (#3199, #5353, #6064); by every open route and `doc_create from: email | html`; estimates unchanged)
 
 > **Last reviewed:** 2026-10-31 | **Last updated:** 2026-10-31 | **Change:** patch (M6, PR #4166/#4088: integrate main f137a289 at 0.16.1; retain automatic-field Print suppression, explicit button/console printing and document-error provenance; 761 scoped tests and verification gates passed; 13-step CLI exercise and render inspection passed; existing warnings retained; estimates unchanged)

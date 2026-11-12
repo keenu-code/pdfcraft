@@ -29,6 +29,10 @@ mail-parser = { version = "1.0", default-features = false, features = ["full_enc
 html2text = { version = "0.17", default-features = false }
 # Pictures an HTML file carries inline (`data:` URIs).
 base64 = "0.23"
+# Outlook messages (.msg): the OLE compound file that holds their MAPI properties. MIT.
+cfb = "0.16"
+# Already in the graph (pdfcraft-engine): the sent time of an Outlook message as an RFC 2822 date.
+chrono = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Already in the graph (pdfcraft-platform, ui-egui); stops a timed-out LibreOffice's whole process
@@ -36,6 +40,9 @@ base64 = "0.23"
 rustix = { version = "1", features = ["process"] }
 
 [dev-dependencies]
+# Outlook message fixtures, written in the tests.
+cfb = "0.16"
+mail-parser = { version = "1.0", default-features = false, features = ["full_encoding"] }
 # An independent CCITT decoder, to check Create PDF's Group 4 images.
 hayro-ccitt.workspace = true
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg"] }

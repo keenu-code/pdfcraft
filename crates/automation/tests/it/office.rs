@@ -275,3 +275,39 @@ fn office_documents_combine_in_order_with_a_bookmark_each() {
         assert!(page.contains(word), "{word:?} not in {page:?}");
     }
 }
+
+/// An email's Word and Excel attachments come out of `email_export` as PDFs holding their text.
+#[test]
+fn email_export_converts_office_attachments() {
+    let Some((dir, mut a)) = office_files() else { return };
+    let b64 = |bytes: &[u8]| {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk.iter().enumerate().fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+            for i in 0..4 {
+                out.push(if i <= chunk.len() { T[((n >> (18 - 6 * i)) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    };
+    let mut eml = String::from(
+        "From: a@example.com\r\nSubject: Office\r\nDate: Tue, 3 Nov 2026 09:14:00 +0000\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n",
+    );
+    for (name, bytes) in [("letter.docx", docx("Quokka letter")), ("budget.xlsx", xlsx("Narwhal budget"))] {
+        eml.push_str(&format!("--B\r\nContent-Type: application/octet-stream; name=\"{name}\"\r\nContent-Disposition: attachment; filename=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n", b64(&bytes)));
+    }
+    eml.push_str("--B--\r\n");
+    std::fs::create_dir_all(dir.path().join("mail")).unwrap();
+    std::fs::write(dir.path().join("mail/office.eml"), eml).unwrap();
+    let made = ok(&mut a, "email_export", json!({ "paths": ["mail"], "out_dir": "out" }));
+    assert_eq!(made["failed"], json!([]), "{made}");
+    assert_eq!(made["originals"], json!([]), "{made}");
+    let written: Vec<&str> = made["written"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+    assert_eq!(written.len(), 3);
+    for (suffix, word) in [(" - 1 letter.pdf", "Quokka"), (" - 2 budget.pdf", "Narwhal")] {
+        let path = written.iter().find(|p| p.ends_with(suffix)).unwrap();
+        let doc = ok(&mut a, "doc_open", json!({ "path": path }))["doc"].as_u64().unwrap();
+        assert!(page_text(&mut a, doc).concat().contains(word), "{path}");
+    }
+}

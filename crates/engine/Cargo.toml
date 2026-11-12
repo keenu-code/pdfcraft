@@ -37,6 +37,8 @@ pdfcraft-create = { workspace = true }
 pdfcraft-model = { workspace = true }
 pdfcraft-geom = { workspace = true }
 thiserror = { workspace = true }
+# Email export names files by the sent time (`dated_stem`) on every target; the desktop adds `clock`.
+chrono = { workspace = true }
 png = "0.18"
 # Already in the graph (through image and pdfcraft-create): image's TiffEncoder can't set the
 # resolution or the compression of an exported page.
@@ -58,6 +60,9 @@ getrandom = "0.4"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
+# Outlook message fixtures for the email export tests.
+cfb = "0.16"
+base64 = "0.23"
 pdfcraft-testkit = { workspace = true }
 # JBIG2 fixtures (`encode_jbig2_generic`).
 pdfcraft-filters = { workspace = true }

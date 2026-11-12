@@ -337,6 +337,7 @@ impl PdfCraftApp {
             unmarked_page: Default::default(),
             export_draft: Default::default(),
             export_status: None,
+            email_export_status: None,
             signature: None,
             initials: None,
             signature_draft: Default::default(),
@@ -784,6 +785,7 @@ impl PdfCraftApp {
             }
         }
         self.poll_export();
+        self.poll_email_export();
         self.auto_ocr_scanned_page();
         self.poll_ocr();
         self.poll_optimize();

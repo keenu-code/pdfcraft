@@ -59,6 +59,19 @@ pub fn office_to_pdf(name: &str, bytes: &[u8]) -> Result<Vec<u8>, CreateError> {
     native::convert_with(&program, name, bytes, TIMEOUT)
 }
 
+/// The Word-processor extensions macOS's own text system reads (`textutil`).
+#[cfg(target_os = "macos")]
+const TEXTUTIL_EXTENSIONS: &[&str] = &["doc", "docx", "rtf", "odt"];
+
+/// A Word, RTF or OpenDocument text file as HTML, read by macOS's own text system (the one
+/// TextEdit uses) through `/usr/bin/textutil`: for when LibreOffice isn't installed. The text,
+/// paragraphs, bold, italic and basic tables come through; the layout is not Word's. Pictures
+/// are left out (textutil writes them as separate files, which are not read). Only on macOS.
+#[cfg(target_os = "macos")]
+pub fn word_to_html_macos(name: &str, bytes: &[u8]) -> Result<Vec<u8>, CreateError> {
+    native::textutil_html(name, bytes)
+}
+
 /// Where LibreOffice is installed, if it is: `PDFCRAFT_SOFFICE`, then the `PATH`, then the
 /// usual install folders.
 #[cfg(not(target_arch = "wasm32"))]
@@ -279,6 +292,37 @@ mod native {
         // The child itself, if the tree kill couldn't reach it.
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// [`super::word_to_html_macos`]: `textutil -convert html` on a copy in a private folder,
+    /// with a fixed input name, stopped after a minute or once its output passes 64 MB.
+    #[cfg(target_os = "macos")]
+    pub(super) fn textutil_html(name: &str, bytes: &[u8]) -> Result<Vec<u8>, CreateError> {
+        const LIMIT: u64 = 64 * 1024 * 1024;
+        let failed = |why: String| CreateError::Office(format!("{name}: {why}"));
+        let (_, ext) = name.rsplit_once('.').ok_or_else(|| failed("this isn't a Word file".into()))?;
+        let ext = super::TEXTUTIL_EXTENSIONS.iter().find(|e| ext.eq_ignore_ascii_case(e)).ok_or_else(|| failed("this isn't a Word file".into()))?;
+        let work = WorkDir::new().map_err(|e| failed(format!("couldn't make a temporary folder: {e}")))?;
+        let input = work.0.join(format!("document.{ext}"));
+        let out = work.0.join("out");
+        std::fs::write(&input, bytes)
+            .and_then(|()| std::fs::create_dir(&out))
+            .map_err(|e| failed(format!("couldn't prepare the conversion: {e}")))?;
+        let output = out.join("document.html");
+        let mut command = Command::new("/usr/bin/textutil");
+        command.args(["-convert", "html", "-output"]).arg(&output).arg(&input).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        match run_limited(command, Duration::from_secs(60), Some((&out, LIMIT))) {
+            Ok(Run::Exited(status)) if status.success() => {}
+            Ok(Run::Exited(_)) => return Err(failed("macOS couldn't read it".into())),
+            Ok(Run::TimedOut) => return Err(failed("reading it took more than a minute".into())),
+            Ok(Run::TooLarge) => return Err(failed("it is too large to read".into())),
+            Err(e) => return Err(failed(format!("couldn't run textutil: {e}"))),
+        }
+        match std::fs::metadata(&output) {
+            Ok(meta) if meta.len() <= LIMIT => std::fs::read(&output).map_err(|e| failed(format!("couldn't read the result: {e}"))),
+            Ok(_) => Err(failed("it is too large to read".into())),
+            Err(e) => Err(failed(format!("macOS wrote no result: {e}"))),
+        }
     }
 
     /// Convert with the LibreOffice at `program`, giving up after `timeout`.

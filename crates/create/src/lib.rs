@@ -6,13 +6,17 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, Stream, serialize}
 
 mod email;
 mod extract;
+mod msg;
 mod text_font;
 mod upright_image;
-pub use email::{from_email, from_html};
+pub use email::{EmailFacts, email_with_facts, from_email, from_html};
 pub use extract::{ExtractedImage, ImageExport, extract_images, image_file, image_file_within};
+pub use msg::{is_msg, msg_to_eml};
 mod office;
 #[cfg(not(target_arch = "wasm32"))]
 pub use office::libreoffice;
+#[cfg(target_os = "macos")]
+pub use office::word_to_html_macos;
 pub use office::{OFFICE_EXTENSIONS, is_office, office_to_pdf};
 use pdfcraft_fonts::wrap_with;
 use text_font::TextFont;
@@ -768,7 +772,7 @@ pub enum SourceKind {
     Text,
     /// A Word, Excel, PowerPoint or OpenDocument file, converted through LibreOffice.
     Office,
-    /// An email message (`.eml`, RFC 5322 with MIME).
+    /// An email message (`.eml`, RFC 5322 with MIME, or an Outlook `.msg`).
     Email,
     /// An HTML file (`.html`, `.htm`).
     Html,
@@ -780,8 +784,8 @@ pub const IMAGE_EXTENSIONS: [&str; 11] = ["png", "jpg", "jpeg", "tif", "tiff", "
 /// File extensions of the plain-text files Create converts to PDF.
 pub const TEXT_EXTENSIONS: [&str; 2] = ["txt", "text"];
 
-/// File extensions of the email messages Create converts to PDF.
-pub const EMAIL_EXTENSIONS: [&str; 1] = ["eml"];
+/// File extensions of the email messages Create converts to PDF (`.msg` is Outlook's).
+pub const EMAIL_EXTENSIONS: [&str; 2] = ["eml", "msg"];
 
 /// File extensions of the HTML files Create converts to PDF.
 pub const HTML_EXTENSIONS: [&str; 2] = ["html", "htm"];
@@ -789,8 +793,8 @@ pub const HTML_EXTENSIONS: [&str; 2] = ["html", "htm"];
 /// File extensions Create converts to PDF itself: [`IMAGE_EXTENSIONS`], [`TEXT_EXTENSIONS`],
 /// [`EMAIL_EXTENSIONS`] and [`HTML_EXTENSIONS`]
 /// (Office documents go through LibreOffice, [`OFFICE_EXTENSIONS`]).
-pub const CONVERTIBLE: [&str; 16] =
-    ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "pcx", "txt", "text", "eml", "html", "htm"];
+pub const CONVERTIBLE: [&str; 17] =
+    ["png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "jp2", "j2k", "jpx", "pcx", "txt", "text", "eml", "msg", "html", "htm"];
 
 /// A PCX file: its manufacturer byte, a version (1 was never used), run-length coding and 1 or 8
 /// bits per plane. `pcx` says when the rest of the header isn't one it can read.
@@ -823,7 +827,7 @@ fn is_image(bytes: &[u8]) -> bool {
 }
 
 /// Whether `bytes` named `name` is a PDF, an image Create can embed, plain text (a `.txt` or
-/// `.text` file), an email message (a `.eml` file), an HTML file (`.html`, `.htm`) or an Office
+/// `.text` file), an email message (a `.eml` file, or an Outlook `.msg`), an HTML file (`.html`, `.htm`) or an Office
 /// document ([`is_office`]). `None` for anything else.
 pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
     let head = bytes.get(..bytes.len().min(1024)).unwrap_or_default();
@@ -837,7 +841,7 @@ pub fn source_kind(name: &str, bytes: &[u8]) -> Option<SourceKind> {
         return Some(SourceKind::Office);
     }
     let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".eml") {
+    if lower.ends_with(".eml") || (lower.ends_with(".msg") && msg::is_msg(bytes)) {
         return Some(SourceKind::Email);
     }
     if lower.ends_with(".html") || lower.ends_with(".htm") {

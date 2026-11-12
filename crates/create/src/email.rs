@@ -118,17 +118,37 @@ const CSS_PX: f64 = 0.75;
 /// The most nodes of an HTML document that are visited for picture sizes.
 const MAX_NODES: usize = 200_000;
 
-/// A PDF of the email message `bytes` (file `name`, for errors and the title when the message
+/// A PDF of the email message `bytes` (a `.eml`, or an Outlook `.msg`; file `name`, for errors and the title when the message
 /// has no subject) on pages of `page` points at `font_size` points of Helvetica with
 /// three-quarter-inch margins: the header block, the body, the pictures it embeds, and its attachments embedded as
 /// document-level file attachments. Characters Helvetica can't draw are written as `[U+XXXX]`
 /// (never refused: a message is evidence, and it is not the reader's to edit), and a note under
 /// the headers says so. Bytes that are not a message (no header at all) are refused.
 pub fn from_email(name: &str, bytes: &[u8], page: (f64, f64), font_size: f64) -> Result<Document, CreateError> {
+    email_with_facts(name, bytes, page, font_size).map(|(doc, _)| doc)
+}
+
+/// What an email export needs besides the PDF: when the message was sent (Unix seconds, from
+/// its `Date`), its subject, and the files the PDF embeds as attachments, in order. Pictures
+/// the body draws are not among them, exactly as the PDF leaves them out.
+#[derive(Debug, Clone)]
+pub struct EmailFacts {
+    pub sent: Option<i64>,
+    pub subject: Option<String>,
+    pub attachments: Vec<(String, Vec<u8>)>,
+    /// Attachments past the limit one PDF embeds, which are not in `attachments`.
+    pub left_out: usize,
+}
+
+/// [`from_email`], with the message's [`EmailFacts`].
+pub fn email_with_facts(name: &str, bytes: &[u8], page: (f64, f64), font_size: f64) -> Result<(Document, EmailFacts), CreateError> {
     let (w, h) = page;
     if !(w.is_finite() && h.is_finite() && (3.0..=MAX_SIDE).contains(&w) && (3.0..=MAX_SIDE).contains(&h)) {
         return Err(CreateError::Invalid("invalid page size".into()));
     }
+    // An Outlook message is read into the same form as a `.eml` first.
+    let converted = if crate::msg::is_msg(bytes) { Some(crate::msg::msg_to_eml(name, bytes)?) } else { None };
+    let bytes = converted.as_deref().unwrap_or(bytes);
     let message = MessageParser::default()
         .parse(bytes)
         .filter(|m| m.header_count() > 0)
@@ -157,6 +177,12 @@ pub fn from_email(name: &str, bytes: &[u8], page: (f64, f64), font_size: f64) ->
         write_page(&mut doc, &mut tree, &items, (w, h), size, &fonts);
     }
     tree.finish(&mut doc)?;
+    let facts = EmailFacts {
+        sent: message.date().map(|d| d.to_timestamp()),
+        subject: message.subject().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
+        attachments: files.iter().map(|f| (f.name.clone(), f.bytes.clone())).collect(),
+        left_out,
+    };
     embed_attachments(&mut doc, files, message.date().as_ref())?;
     let title = match message.subject().map(str::trim).filter(|s| !s.is_empty()) {
         Some(subject) => subject.to_string(),
@@ -164,7 +190,7 @@ pub fn from_email(name: &str, bytes: &[u8], page: (f64, f64), font_size: f64) ->
     };
     set_title(&mut doc, &title);
     set_author(&mut doc, &mailboxes(message.from()));
-    Ok(doc)
+    Ok((doc, facts))
 }
 
 /// A PDF of the HTML file `bytes` (file `name`, for errors and the title when the file has no
